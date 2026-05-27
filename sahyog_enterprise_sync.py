@@ -14,7 +14,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support.ui import Select
-from pypdf import PdfWriter
 
 # ==========================================
 # CLOUD SECRETS & CREDENTIALS
@@ -23,6 +22,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 SAHYOG_USER = os.environ.get("SAHYOG_USER")
 SAHYOG_PASS = os.environ.get("SAHYOG_PASS")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 if not all([BOT_TOKEN, CHAT_ID, SAHYOG_USER, SAHYOG_PASS]):
     print("❌ CRITICAL: Missing Environment Variables. Ensure GitHub Secrets are set.")
@@ -155,6 +155,22 @@ PANCHAYAT_MAP = {
 }
 
 # ==========================================
+# WEBHOOK TOGGLE ENGINE
+# ==========================================
+def toggle_webhook(enable=True):
+    """Passes the bot baton between Python (polling) and Google (webhook)."""
+    if enable and WEBHOOK_URL:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}"
+        try: requests.get(url)
+        except: pass
+        logging.info("🔗 Webhook re-enabled. Google is back in control.")
+    else:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
+        try: requests.get(url)
+        except: pass
+        logging.info("🔌 Webhook disabled. Python is now listening via polling.")
+
+# ==========================================
 # TELEGRAM COMMUNICATIONS
 # ==========================================
 def send_telegram_message(message):
@@ -188,6 +204,9 @@ def wait_for_telegram_reply(prompt_message):
     logging.info("⏳ Waiting for Telegram reply...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     
+    # Flush old pending updates so it doesn't read old replies
+    requests.get(url)
+    time.sleep(1)
     response = requests.get(url).json()
     last_update_id = response["result"][-1]["update_id"] if response.get("result") else 0
 
@@ -200,7 +219,10 @@ def wait_for_telegram_reply(prompt_message):
                     last_update_id = update["update_id"]
                     if "message" in update and "text" in update["message"]:
                         if str(update["message"]["chat"]["id"]) == str(CHAT_ID):
-                            return update["message"]["text"].strip()
+                            text = update["message"]["text"].strip()
+                            # Acknowledge receipt
+                            send_telegram_message(f"✅ Received: {text}")
+                            return text
         except: pass
         time.sleep(2)
 
@@ -263,7 +285,6 @@ def verify_page_state(driver):
             else: return True
         except: pass
     
-    # Pause via Telegram instead of CMD input
     wait_for_telegram_reply("❌ CRITICAL: Server Error persists. Manual intervention required.\nReply 'continue' once you believe the portal is stable.")
     return True
 
@@ -390,7 +411,6 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp):
         path = os.path.join(target_output_dir, f"URGENT_COMPLIANCE_{timestamp}.xlsx")
         if atomic_save_excel(pd.DataFrame(urgent_data)[final_cols], path): generated_files.append(path)
 
-    # Deliver final files via Telegram
     send_telegram_message("📁 Uploading Final Reports to Telegram...")
     for file_path in generated_files:
         send_telegram_document(file_path)
@@ -421,7 +441,6 @@ def perform_scraping_cycle(driver, main_tab, target_output_dir, skip_list, maste
             for s_opt in status_options:
                 try:
                     driver.switch_to.window(main_tab)
-                    combo_name = f"{t_opt['text']} > {c_opt['text']} > {s_opt['text']}"
                     
                     Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
                     Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")).select_by_value(c_opt['value'])
@@ -527,46 +546,54 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, skip_list, mast
 # RUN MAIN ASSEMBLY
 # ==========================================
 def main():
-    send_telegram_message("🚀 Sahyog Enterprise Multi-Login Automation (Cloud Version) Starting...")
+    # 🔌 IMMEDIATELY DISABLE GOOGLE WEBHOOK SO PYTHON CAN LISTEN
+    toggle_webhook(False)
     
-    master_logged_rows, _ = check_for_resume()
-    skip_list = set(row.get("Registration No.") for row in master_logged_rows if row.get("Registration No."))
-    audit_log = []
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--window-size=1920,1080")
-    
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.set_page_load_timeout(45)
-
-    timestamp = datetime.now().strftime('%d-%m-%Y_%H%M')
-    target_output_dir = os.path.join(os.getcwd(), f"Sahyog_Shivir_{timestamp}")
-    os.makedirs(target_output_dir, exist_ok=True)
-
-    while True:
-        perform_login(driver)
+    try:
+        send_telegram_message("🚀 Sahyog Enterprise Multi-Login Automation (Cloud Version) Starting...")
         
-        try: safe_click(driver, driver.find_element(By.XPATH, "//a[contains(text(), 'Grievance Action')]"))
-        except: driver.get("https://sahyog.bihar.gov.in/Sahyog/IGRS_InnerPage/Common/ComplaintAction.aspx")
+        master_logged_rows, _ = check_for_resume()
+        skip_list = set(row.get("Registration No.") for row in master_logged_rows if row.get("Registration No."))
+        audit_log = []
         
-        verify_page_state(driver)
-        perform_scraping_cycle(driver, driver.current_window_handle, target_output_dir, skip_list, master_logged_rows, audit_log)
+        chrome_options = Options()
+        chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        chrome_options.add_argument("--window-size=1920,1080")
         
-        cont = wait_for_telegram_reply("✅ Data collection for this ID is complete.\nDo you wish to loop another ID? (y/n):").lower()
-        if cont in ['y', 'yes']:
-            try: driver.find_element(By.ID, "ctl00_LoginViewSTDPTDPADM_LoginStatusSTDPTDPADM").click()
-            except: pass
-        else: break
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.set_page_load_timeout(45)
 
-    run_post_processing(master_logged_rows, target_output_dir, timestamp)
-    
-    if os.path.exists(LEDGER_FILE): os.remove(LEDGER_FILE)
-    send_telegram_message("🎉 Automation Sequence Completed Successfully. Ledger Cleared. Server shutting down.")
-    driver.quit()
+        timestamp = datetime.now().strftime('%d-%m-%Y_%H%M')
+        target_output_dir = os.path.join(os.getcwd(), f"Sahyog_Shivir_{timestamp}")
+        os.makedirs(target_output_dir, exist_ok=True)
+
+        while True:
+            perform_login(driver)
+            
+            try: safe_click(driver, driver.find_element(By.XPATH, "//a[contains(text(), 'Grievance Action')]"))
+            except: driver.get("https://sahyog.bihar.gov.in/Sahyog/IGRS_InnerPage/Common/ComplaintAction.aspx")
+            
+            verify_page_state(driver)
+            perform_scraping_cycle(driver, driver.current_window_handle, target_output_dir, skip_list, master_logged_rows, audit_log)
+            
+            cont = wait_for_telegram_reply("✅ Data collection for this ID is complete.\nDo you wish to loop another ID? (y/n):").lower()
+            if cont in ['y', 'yes']:
+                try: driver.find_element(By.ID, "ctl00_LoginViewSTDPTDPADM_LoginStatusSTDPTDPADM").click()
+                except: pass
+            else: break
+
+        run_post_processing(master_logged_rows, target_output_dir, timestamp)
+        
+        if os.path.exists(LEDGER_FILE): os.remove(LEDGER_FILE)
+        send_telegram_message("🎉 Automation Sequence Completed Successfully. Ledger Cleared. Server shutting down.")
+        driver.quit()
+
+    finally:
+        # 🔗 NO MATTER WHAT HAPPENS, GIVE CONTROL BACK TO GOOGLE BEFORE DYING
+        toggle_webhook(True)
 
 if __name__ == "__main__":
     main()
