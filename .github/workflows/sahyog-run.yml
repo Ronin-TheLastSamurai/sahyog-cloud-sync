@@ -28,4 +28,5 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           SAHYOG_USER: ${{ secrets.SAHYOG_USER }}
           SAHYOG_PASS: ${{ secrets.SAHYOG_PASS }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python sahyog_enterprise_sync.py
