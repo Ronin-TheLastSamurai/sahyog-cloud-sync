@@ -428,44 +428,96 @@ def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_ro
     for t_opt in type_options:
         for c_opt in complaint_options:
             for s_opt in status_options:
-                try:
-                    driver.switch_to.window(main_tab)
-                    combo_name = f"{t_opt['text']} > {c_opt['text']} > {s_opt['text']}"
-                    logging.info(f"🔄 Scanning Filter: {combo_name}")
+                combo_name = f"{t_opt['text']} > {c_opt['text']} > {s_opt['text']}"
+                
+                # --- THE ACCOUNTING REDO LOOP WITH EXPONENTIAL BACKOFF ---
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        driver.switch_to.window(main_tab)
+                        logging.info(f"🔄 Scanning Filter: {combo_name} (Attempt {attempt+1}/{max_retries})")
 
-                    # ROBUST DROPDOWN STABILIZATION (Staleness checks)
-                    old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
-                    Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
-                    try: WebDriverWait(driver, 5).until(EC.staleness_of(old_status))
-                    except: pass
+                        # EXPLICIT UI BUFFERS AND STALENESS CHECKS
+                        old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
+                        Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
+                        time.sleep(1) # Default buffer for ASP.NET to fire AutoPostBack
+                        try: WebDriverWait(driver, 10).until(EC.staleness_of(old_status))
+                        except: pass
+                        time.sleep(1) # Buffer to let the DOM settle
 
-                    old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
-                    Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")).select_by_value(c_opt['value'])
-                    try: WebDriverWait(driver, 5).until(EC.staleness_of(old_status))
-                    except: pass
-                    
-                    Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")).select_by_value(s_opt['value'])
-                    time.sleep(2) 
+                        old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
+                        Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")).select_by_value(c_opt['value'])
+                        time.sleep(1)
+                        try: WebDriverWait(driver, 10).until(EC.staleness_of(old_status))
+                        except: pass
+                        time.sleep(1)
+                        
+                        Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")).select_by_value(s_opt['value'])
+                        time.sleep(3) # Appropriate settling time before clicking View
 
-                    metrics = {'combo': combo_name, 'total': 0, 'skipped': 0, 'extracted': 0, 'errors': 0}
-                    safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnViewNormal"))
-                    time.sleep(4)
-                    verify_page_state(driver)
-                    
-                    run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs)
-                    audit_log.append(metrics)
-                except Exception as e: 
-                    logging.error(f"[ERROR] Failed loop: {e}")
-                    continue
+                        metrics = {'combo': combo_name, 'total': 0, 'skipped': 0, 'extracted': 0, 'errors': 0}
+                        safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnViewNormal"))
+                        time.sleep(4)
+                        verify_page_state(driver)
+                        
+                        # Run the extraction and check if math balances
+                        success = run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs)
+                        
+                        if success:
+                            audit_log.append(metrics)
+                            break # Math matched! Move to the next dropdown.
+                        else:
+                            if attempt < max_retries - 1:
+                                backoff_time = 5 * (2 ** attempt) # EXPONENTIAL BACKOFF: 5s, then 10s
+                                msg = f"⚠️ WARNING: Data Mismatch in {combo_name}. Missing records detected! Redoing filter in {backoff_time}s..."
+                                logging.warning(msg)
+                                send_telegram_message(msg)
+                                time.sleep(backoff_time) 
+                                driver.refresh()
+                                time.sleep(5)
+                            else:
+                                logging.error(f"❌ Failed to reconcile {combo_name} after {max_retries} attempts. Moving on to protect server.")
+                                audit_log.append(metrics)
+                                
+                    except Exception as e: 
+                        logging.error(f"[ERROR] Failed loop: {e}")
+                        driver.refresh()
+                        time.sleep(5)
 
 def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs):
-    complaint_cards = driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card")
-    metrics['total'] = len(complaint_cards)
-    
-    if metrics['total'] == 0: return 
-    send_telegram_message(f"📊 Found {metrics['total']} records in [{s_opt['text']}]. Extracting...")
+    # 1. Establish the True Expected Total from the Blue Badge
+    expected_total = 0
+    try:
+        total_elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Total :') or contains(text(), 'Total:')]")
+        for el in total_elements:
+            match = re.search(r'Total\s*:\s*(\d+)', el.text, re.IGNORECASE)
+            if match:
+                expected_total = int(match.group(1))
+                break
+    except: pass
 
-    for card_idx in range(metrics['total']):
+    # Fallback if badge fails
+    if expected_total == 0:
+        expected_total = len(driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card"))
+
+    metrics['total'] = expected_total
+    if expected_total == 0: return True # Nothing to process, success!
+
+    send_telegram_message(f"📊 Target: {expected_total} records in [{s_opt['text']}]. Verifying data...")
+
+    # 2. Force Lazy-Loading by scrolling until all cards appear
+    for _ in range(5): 
+        cards = driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card")
+        if len(cards) >= expected_total: break
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+
+    # Re-evaluate visible cards
+    complaint_cards = driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card")
+    visible_cards = len(complaint_cards)
+    
+    # 3. Extraction Loop
+    for card_idx in range(visible_cards):
         check_session(driver)
         verify_page_state(driver)
         try:
@@ -518,7 +570,6 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
                     if row.get("Registration No.") == expected_ref: row.update(data); break
                 metrics['skipped'] += 1
             else:
-                # PDF ENGINE RESTORED
                 temp_pdf1 = os.path.join(target_output_dir, f"temp_print_{card_idx}.pdf")
                 temp_pdf2 = os.path.join(target_output_dir, f"temp_view_{card_idx}.pdf")
                 
@@ -562,6 +613,10 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
                 data["Registration Date"] = reg_date
                 data["Grievance Type"] = g_type
                 master_logged_rows.append(data)
+                
+                # Save ledger immediately so if it crashes, data is perfectly safe
+                with open(LEDGER_FILE, 'w', encoding='utf-8') as f: json.dump(master_logged_rows, f, ensure_ascii=False, indent=4)
+                
                 generated_pdfs.append(final_pdf)
                 metrics['extracted'] += 1
 
@@ -574,6 +629,16 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
                 driver.switch_to.window(main_tab)
                 safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnBack"))
             except: pass
+
+    # 4. The Accounting Gate: Do the numbers match?
+    total_processed = metrics['extracted'] + metrics['skipped'] + metrics['errors']
+    
+    if total_processed < expected_total:
+        logging.warning(f"⚠️ DATA MISMATCH: Expected {expected_total}, but only Processed {total_processed}")
+        return False # This tells the main loop to REDO this entire filter
+        
+    logging.info(f"✅ Verification Passed: {total_processed}/{expected_total} accounted for.")
+    return True # Math matches perfectly, move to next!
 
 def print_audit_report(audit_log):
     logging.info("\n" + "="*85)
@@ -597,7 +662,7 @@ def main():
         
         master_logged_rows = []
         if os.path.exists(LEDGER_FILE):
-            with open(LEDGER_FILE, 'r') as f: master_logged_rows = json.load(f)
+            with open(LEDGER_FILE, 'r', encoding='utf-8') as f: master_logged_rows = json.load(f)
             
         audit_log = []
         generated_pdfs = []
