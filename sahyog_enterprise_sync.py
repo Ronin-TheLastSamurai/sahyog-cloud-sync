@@ -60,7 +60,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# HARDCODED MAPPING DATA (Fully Restored)
+# HARDCODED MAPPING DATA
 # ==========================================
 BLOCK_DIVISION_MAP = {
     'Amnour': 'CHAPRA (EAST)', 'Dariapur': 'CHAPRA (EAST)', 'Dighwara': 'CHAPRA (EAST)', 
@@ -173,7 +173,7 @@ def toggle_webhook(enable=True):
         logging.info("🔌 Webhook disabled. Python is now listening via polling.")
 
 # ==========================================
-# TELEGRAM COMMUNICATIONS
+# TELEGRAM COMMUNICATIONS & SOFT SYNC
 # ==========================================
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -201,11 +201,17 @@ def send_telegram_document(file_path):
             logging.info(f"📤 Uploaded {os.path.basename(file_path)} to Telegram.")
     except Exception as e: logging.error(f"Failed to send file: {e}")
 
-def wait_for_telegram_reply(prompt_message):
+def get_telegram_file(file_id):
+    file_info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}").json()
+    file_path = file_info['result']['file_path']
+    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    return requests.get(download_url).content
+
+def wait_for_telegram_reply_or_file(prompt_message):
     send_telegram_message(prompt_message)
-    logging.info("⏳ Waiting for Telegram reply...")
+    logging.info("⏳ Waiting for Telegram text or file...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    requests.get(url)
+    requests.get(url) # Flush old messages
     time.sleep(1)
     response = requests.get(url).json()
     last_update_id = response["result"][-1]["update_id"] if response.get("result") else 0
@@ -217,13 +223,17 @@ def wait_for_telegram_reply(prompt_message):
             if resp.get("result"):
                 for update in resp["result"]:
                     last_update_id = update["update_id"]
-                    if "message" in update and "text" in update["message"]:
+                    if "message" in update:
                         if str(update["message"]["chat"]["id"]) == str(CHAT_ID):
-                            text = update["message"]["text"].strip()
-                            msg = f"✅ Received: {text}"
-                            logging.info(msg)
-                            send_telegram_message(msg)
-                            return text
+                            if "document" in update["message"]:
+                                doc = update["message"]["document"]
+                                file_id, file_name = doc["file_id"], doc["file_name"]
+                                send_telegram_message(f"📥 Received file: {file_name}. Processing...")
+                                return {"type": "file", "content": get_telegram_file(file_id), "name": file_name}
+                            elif "text" in update["message"]:
+                                text = update["message"]["text"].strip()
+                                send_telegram_message(f"✅ Received: {text}")
+                                return {"type": "text", "text": text}
         except: pass
         time.sleep(2)
 
@@ -259,7 +269,8 @@ def verify_page_state(driver):
                 time.sleep(3)
             else: return True
         except: pass
-    wait_for_telegram_reply("❌ CRITICAL: Server Error persists. Manual intervention required.\nReply 'continue' once stable.")
+    msg = "❌ CRITICAL: Server Error persists. Manual intervention required.\nReply 'continue' once stable."
+    wait_for_telegram_reply_or_file(msg)
     return True
 
 def check_session(driver):
@@ -272,6 +283,19 @@ def check_session(driver):
         send_telegram_message(msg)
         perform_login(driver)
         return True
+
+def load_overrides():
+    overrides = {}
+    if os.path.exists(OVERRIDE_FILE):
+        try:
+            df = pd.read_excel(OVERRIDE_FILE).fillna("")
+            if all(col in df.columns for col in ['Registration No.', 'Subdivision', 'Section']):
+                for _, row in df.iterrows():
+                    ref = str(row['Registration No.']).strip()
+                    if ref:
+                        overrides[ref] = {'Subdivision': str(row['Subdivision']).strip(), 'Section': str(row['Section']).strip()}
+        except Exception as e: logging.error(f"Failed to read overrides: {e}")
+    return overrides
 
 # ==========================================
 # DYNAMIC BATCH ZIPPER (45 MB THRESHOLD)
@@ -295,6 +319,7 @@ def zip_and_send_pdfs(pdf_list, target_output_dir, timestamp):
         logging.info(f"Sent ZIP Part {part} ({len(files)} files)")
 
     for pdf in pdf_list:
+        if not os.path.exists(pdf): continue
         file_size = os.path.getsize(pdf)
         if current_size + file_size > MAX_SIZE_BYTES:
             create_and_send_zip(batch_pdfs, part_num)
@@ -330,7 +355,8 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
     logging.info(msg)
     send_telegram_message(msg)
     
-    combined_data, west_data, east_data, urgent_data = [], [], [], []
+    combined_data, west_data, east_data, other_data, urgent_data = [], [], [], [], []
+    overrides = load_overrides()
     
     for row in master_logged_rows:
         raw_date = str(row.get("Registration Date", ""))
@@ -339,8 +365,12 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
         panchayat = str(row.get("Panchayat Name", "")).replace("nan", "").strip()
         ref_no = str(row.get("Registration No.", "")).strip()
         
-        subdiv, section = PANCHAYAT_MAP.get((block, panchayat), ("", ""))
-        if not subdiv and block == "Chapra": subdiv, section = "CHAPRA(RURAL)", "UNKNOWN_SECTION"
+        # APPLY MANUAL OVERRIDES ENGINE
+        if ref_no in overrides:
+            subdiv, section = overrides[ref_no]['Subdivision'], overrides[ref_no]['Section']
+        else:
+            subdiv, section = PANCHAYAT_MAP.get((block, panchayat), ("", ""))
+            if not subdiv and block == "Chapra": subdiv, section = "CHAPRA(RURAL)", "UNKNOWN_SECTION"
 
         formatted_row = {
             "Type": row.get("Type", ""), "Category": row.get("Category", ""), "Status": row.get("Status", ""),
@@ -365,6 +395,7 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
         
         if division == "CHAPRA (WEST)": west_data.append(formatted_row)
         elif division == "CHAPRA (EAST)": east_data.append(formatted_row)
+        else: other_data.append(formatted_row) # "OTHER AREA" RESTORED
 
     final_cols = list(formatted_row.keys())
     excel_files = []
@@ -378,6 +409,9 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
     if east_data:
         path = os.path.join(target_output_dir, f"Chapra East_{timestamp}.xlsx")
         if atomic_save_excel(pd.DataFrame(east_data)[final_cols], path): excel_files.append(path)
+    if other_data:
+        path = os.path.join(target_output_dir, f"Other Area_{timestamp}.xlsx")
+        if atomic_save_excel(pd.DataFrame(other_data)[final_cols], path): excel_files.append(path)
     if urgent_data:
         path = os.path.join(target_output_dir, f"URGENT_COMPLIANCE_{timestamp}.xlsx")
         if atomic_save_excel(pd.DataFrame(urgent_data)[final_cols], path): excel_files.append(path)
@@ -399,7 +433,9 @@ def perform_login(driver):
             captcha_path = "captcha_screenshot.png"
             captcha_element.screenshot(captcha_path)
             send_telegram_photo(captcha_path, "🚨 SERVER WAKING UP: Please reply with this Captcha code.")
-            captcha_text = wait_for_telegram_reply("Enter Captcha:")
+            
+            resp = wait_for_telegram_reply_or_file("Enter Captcha:")
+            captcha_text = resp['text'] if resp['type'] == 'text' else ""
             
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtUserName").send_keys(SAHYOG_USER)
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtPassword").send_keys(SAHYOG_PASS)
@@ -419,6 +455,78 @@ def get_dropdown_options(driver, element_id):
                 for opt in select_elem.options if opt.get_attribute("value") and opt.get_attribute("value") != "0" and "--" not in opt.text]
     except: return []
 
+# --- EXTRACTED DROPDOWN PROCESSOR WITH AUTO-RETRY ---
+def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, radio_index=None, radio_name=""):
+    combo_name = f"{t_opt['text']} > {c_opt['text']} > {s_opt['text']}"
+    if radio_name: combo_name += f" > {radio_name}"
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            driver.switch_to.window(main_tab)
+            logging.info(f"🔄 Scanning Filter: {combo_name} (Attempt {attempt+1}/{max_retries})")
+
+            # EXPLICIT UI BUFFERS AND STALENESS CHECKS
+            old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
+            Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
+            time.sleep(1) 
+            try: WebDriverWait(driver, 10).until(EC.staleness_of(old_status))
+            except: pass
+            time.sleep(1) 
+
+            old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
+            Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")).select_by_value(c_opt['value'])
+            time.sleep(1)
+            try: WebDriverWait(driver, 10).until(EC.staleness_of(old_status))
+            except: pass
+            time.sleep(1)
+            
+            Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")).select_by_value(s_opt['value'])
+            time.sleep(2) 
+            
+            # DELEGATED RADIO BUTTON ENGINE RESTORED
+            if radio_index is not None:
+                radios = driver.find_elements(By.CSS_SELECTOR, ".delegated-panel .delegated-radio label")
+                if radio_index < len(radios):
+                    safe_click(driver, radios[radio_index])
+                    time.sleep(2)
+            
+            # FORCE TOP RECORDS TO --ALL-- RESTORED
+            try: 
+                Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlTopFilter")).select_by_value("0")
+            except: pass
+            time.sleep(3) 
+
+            metrics = {'combo': combo_name, 'total': 0, 'skipped': 0, 'extracted': 0, 'errors': 0}
+            safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnViewNormal"))
+            time.sleep(4)
+            verify_page_state(driver)
+            
+            # Run the extraction and check if math balances
+            success = run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs)
+            
+            if success:
+                audit_log.append(metrics)
+                break 
+            else:
+                if attempt < max_retries - 1:
+                    backoff_time = 5 * (2 ** attempt) 
+                    msg = f"⚠️ WARNING: Data Mismatch in {combo_name}. Missing records! Redoing filter in {backoff_time}s..."
+                    logging.warning(msg)
+                    send_telegram_message(msg)
+                    time.sleep(backoff_time) 
+                    driver.refresh()
+                    time.sleep(5)
+                else:
+                    logging.error(f"❌ Failed to reconcile {combo_name} after {max_retries} attempts. Moving on to protect server.")
+                    audit_log.append(metrics)
+                    
+        except Exception as e: 
+            logging.error(f"[ERROR] Failed loop: {e}")
+            driver.refresh()
+            time.sleep(5)
+
+
 def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs):
     WebDriverWait(driver, 30).until(lambda d: len(d.find_elements(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")) > 0)
     type_options = get_dropdown_options(driver, "ctl00_ContentPlaceHolder1_ddlFilterType")
@@ -428,61 +536,26 @@ def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_ro
     for t_opt in type_options:
         for c_opt in complaint_options:
             for s_opt in status_options:
-                combo_name = f"{t_opt['text']} > {c_opt['text']} > {s_opt['text']}"
+                # Dry run to check for Delegated Radios
+                driver.switch_to.window(main_tab)
+                try: Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
+                except: pass
+                time.sleep(1)
+                try: Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")).select_by_value(c_opt['value'])
+                except: pass
+                time.sleep(1)
+                try: Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")).select_by_value(s_opt['value'])
+                except: pass
+                time.sleep(2)
                 
-                # --- THE ACCOUNTING REDO LOOP WITH EXPONENTIAL BACKOFF ---
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        driver.switch_to.window(main_tab)
-                        logging.info(f"🔄 Scanning Filter: {combo_name} (Attempt {attempt+1}/{max_retries})")
-
-                        # EXPLICIT UI BUFFERS AND STALENESS CHECKS
-                        old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
-                        Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
-                        time.sleep(1) # Default buffer for ASP.NET to fire AutoPostBack
-                        try: WebDriverWait(driver, 10).until(EC.staleness_of(old_status))
-                        except: pass
-                        time.sleep(1) # Buffer to let the DOM settle
-
-                        old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
-                        Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")).select_by_value(c_opt['value'])
-                        time.sleep(1)
-                        try: WebDriverWait(driver, 10).until(EC.staleness_of(old_status))
-                        except: pass
-                        time.sleep(1)
-                        
-                        Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")).select_by_value(s_opt['value'])
-                        time.sleep(3) # Appropriate settling time before clicking View
-
-                        metrics = {'combo': combo_name, 'total': 0, 'skipped': 0, 'extracted': 0, 'errors': 0}
-                        safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnViewNormal"))
-                        time.sleep(4)
-                        verify_page_state(driver)
-                        
-                        # Run the extraction and check if math balances
-                        success = run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs)
-                        
-                        if success:
-                            audit_log.append(metrics)
-                            break # Math matched! Move to the next dropdown.
-                        else:
-                            if attempt < max_retries - 1:
-                                backoff_time = 5 * (2 ** attempt) # EXPONENTIAL BACKOFF: 5s, then 10s
-                                msg = f"⚠️ WARNING: Data Mismatch in {combo_name}. Missing records detected! Redoing filter in {backoff_time}s..."
-                                logging.warning(msg)
-                                send_telegram_message(msg)
-                                time.sleep(backoff_time) 
-                                driver.refresh()
-                                time.sleep(5)
-                            else:
-                                logging.error(f"❌ Failed to reconcile {combo_name} after {max_retries} attempts. Moving on to protect server.")
-                                audit_log.append(metrics)
-                                
-                    except Exception as e: 
-                        logging.error(f"[ERROR] Failed loop: {e}")
-                        driver.refresh()
-                        time.sleep(5)
+                radios = driver.find_elements(By.CSS_SELECTOR, ".delegated-panel .delegated-radio label")
+                radio_names = [r.text.strip() for r in radios] if radios else []
+                
+                if radio_names:
+                    for i, r_name in enumerate(radio_names):
+                        process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, radio_index=i, radio_name=r_name)
+                else:
+                    process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt)
 
 def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs):
     # 1. Establish the True Expected Total from the Blue Badge
@@ -501,9 +574,15 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
         expected_total = len(driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card"))
 
     metrics['total'] = expected_total
-    if expected_total == 0: return True # Nothing to process, success!
+    
+    if expected_total == 0: 
+        logging.info(f"🔍 [FOUND] 0 records in '{metrics['combo']}'. Skipping.")
+        return True # Nothing to process, success!
 
-    send_telegram_message(f"📊 Target: {expected_total} records in [{s_opt['text']}]. Verifying data...")
+    # VERBOSE TELEMETRY: SEARCH STARTED
+    start_msg = f"🔍 [FOUND] {expected_total} records in '{metrics['combo']}'. Starting extraction..."
+    logging.info(start_msg)
+    send_telegram_message(start_msg)
 
     # 2. Force Lazy-Loading by scrolling until all cards appear
     for _ in range(5): 
@@ -634,10 +713,18 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
     total_processed = metrics['extracted'] + metrics['skipped'] + metrics['errors']
     
     if total_processed < expected_total:
-        logging.warning(f"⚠️ DATA MISMATCH: Expected {expected_total}, but only Processed {total_processed}")
         return False # This tells the main loop to REDO this entire filter
         
-    logging.info(f"✅ Verification Passed: {total_processed}/{expected_total} accounted for.")
+    # VERBOSE TELEMETRY: CYCLE COMPLETED SUCCESSFULLY
+    summary_msg = (
+        f"✅ [COMPLETED] '{metrics['combo']}'\n"
+        f"Total Expected: {expected_total}\n"
+        f"📥 Extracted: {metrics['extracted']}\n"
+        f"⏭️ Skipped: {metrics['skipped']}\n"
+        f"❌ Errors: {metrics['errors']}"
+    )
+    logging.info(summary_msg)
+    send_telegram_message(summary_msg)
     return True # Math matches perfectly, move to next!
 
 def print_audit_report(audit_log):
@@ -661,9 +748,35 @@ def main():
         send_telegram_message("🚀 Sahyog Cloud Engine Starting...")
         
         master_logged_rows = []
+        is_resuming = False
+        
         if os.path.exists(LEDGER_FILE):
-            with open(LEDGER_FILE, 'r', encoding='utf-8') as f: master_logged_rows = json.load(f)
-            
+            msg = "🚨 INCOMPLETE RUN DETECTED. Reply 'yes' to resume, or 'no' for fresh run."
+            resp = wait_for_telegram_reply_or_file(msg)
+            if resp['type'] == 'text' and resp['text'].lower() in ['y', 'yes']:
+                with open(LEDGER_FILE, 'r', encoding='utf-8') as f: master_logged_rows = json.load(f)
+                is_resuming = True
+                send_telegram_message(f"✅ Resuming... Loaded {len(master_logged_rows)} records from memory.")
+            else:
+                os.remove(LEDGER_FILE)
+                send_telegram_message("🗑️ Old ledger deleted. Starting a fresh run.")
+        
+        # HISTORICAL SOFT SYNC (TELEGRAM FEATURE RESTORED)
+        if not is_resuming:
+            msg = "Do you want to load a historical Excel file for Soft Sync? Send the .xlsx file now, or reply 'skip'."
+            resp = wait_for_telegram_reply_or_file(msg)
+            if resp['type'] == 'file' and resp['name'].endswith(('.xls', '.xlsx')):
+                with open("temp_history.xlsx", "wb") as f: f.write(resp['content'])
+                try:
+                    df = pd.read_excel("temp_history.xlsx").fillna("")
+                    master_logged_rows = df.to_dict('records')
+                    # Save to ledger instantly so history is preserved
+                    with open(LEDGER_FILE, 'w', encoding='utf-8') as f: json.dump(master_logged_rows, f, ensure_ascii=False, indent=4)
+                    skip_list = set(r.get("Registration No.") for r in master_logged_rows if r.get("Registration No."))
+                    send_telegram_message(f"✅ Database loaded. Syncing {len(skip_list)} historical IDs.")
+                except Exception as e:
+                    send_telegram_message(f"❌ Failed to parse Excel: {e}")
+        
         audit_log = []
         generated_pdfs = []
         
@@ -689,7 +802,9 @@ def main():
             
             perform_scraping_cycle(driver, driver.current_window_handle, target_output_dir, master_logged_rows, audit_log, generated_pdfs)
             
-            if wait_for_telegram_reply("✅ Data collection complete. Loop another ID? (y/n):").lower() not in ['y', 'yes']: break
+            resp = wait_for_telegram_reply_or_file("✅ Data collection complete. Loop another ID? (y/n):")
+            cont = resp['text'].lower() if resp['type'] == 'text' else 'n'
+            if cont not in ['y', 'yes']: break
 
         run_post_processing(master_logged_rows, target_output_dir, timestamp, generated_pdfs)
         print_audit_report(audit_log)
