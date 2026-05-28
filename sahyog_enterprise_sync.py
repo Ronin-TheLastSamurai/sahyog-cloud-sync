@@ -40,7 +40,6 @@ OVERRIDE_FILE = "mapping_overrides.xlsx"
 
 def load_or_create_config():
     default_config = {
-        "recency_threshold_hours": 6,
         "urgent_threshold_days": 9
     }
     if not os.path.exists(CONFIG_FILE):
@@ -173,7 +172,7 @@ def toggle_webhook(enable=True):
         logging.info("🔌 Webhook disabled. Python is now listening via polling.")
 
 # ==========================================
-# TELEGRAM COMMUNICATIONS & SOFT SYNC
+# TELEGRAM COMMUNICATIONS
 # ==========================================
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -211,7 +210,7 @@ def wait_for_telegram_reply_or_file(prompt_message):
     send_telegram_message(prompt_message)
     logging.info("⏳ Waiting for Telegram text or file...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    requests.get(url) # Flush old messages
+    requests.get(url) 
     time.sleep(1)
     response = requests.get(url).json()
     last_update_id = response["result"][-1]["update_id"] if response.get("result") else 0
@@ -273,7 +272,7 @@ def verify_page_state(driver):
     wait_for_telegram_reply_or_file(msg)
     return True
 
-def check_session(driver):
+def check_session(driver, current_user, current_pass):
     try:
         driver.find_element(By.ID, "ctl00_lblwelcome")
         return True
@@ -281,7 +280,7 @@ def check_session(driver):
         msg = "🚨 SESSION EXPIRED! Triggering re-login flow..."
         logging.warning(msg)
         send_telegram_message(msg)
-        perform_login(driver)
+        perform_login(driver, current_user, current_pass)
         return True
 
 def load_overrides():
@@ -298,12 +297,12 @@ def load_overrides():
     return overrides
 
 # ==========================================
-# DYNAMIC BATCH ZIPPER (45 MB THRESHOLD)
+# DYNAMIC BATCH ZIPPER
 # ==========================================
 def zip_and_send_pdfs(pdf_list, target_output_dir, timestamp):
     if not pdf_list: return
     
-    MAX_SIZE_BYTES = 45 * 1024 * 1024  # 45 MB absolute limit
+    MAX_SIZE_BYTES = 45 * 1024 * 1024  
     current_size = 0
     batch_pdfs = []
     part_num = 1
@@ -365,7 +364,6 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
         panchayat = str(row.get("Panchayat Name", "")).replace("nan", "").strip()
         ref_no = str(row.get("Registration No.", "")).strip()
         
-        # APPLY MANUAL OVERRIDES ENGINE
         if ref_no in overrides:
             subdiv, section = overrides[ref_no]['Subdivision'], overrides[ref_no]['Section']
         else:
@@ -395,7 +393,7 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
         
         if division == "CHAPRA (WEST)": west_data.append(formatted_row)
         elif division == "CHAPRA (EAST)": east_data.append(formatted_row)
-        else: other_data.append(formatted_row) # "OTHER AREA" RESTORED
+        else: other_data.append(formatted_row)
 
     final_cols = list(formatted_row.keys())
     excel_files = []
@@ -422,9 +420,9 @@ def run_post_processing(master_logged_rows, target_output_dir, timestamp, genera
     zip_and_send_pdfs(generated_pdfs, target_output_dir, timestamp)
 
 # ==========================================
-# AUTH & SCRAPING ENGINE
+# AUTH & DYNAMIC LOGIN ENGINE
 # ==========================================
-def perform_login(driver):
+def perform_login(driver, login_user, login_pass):
     while True:
         try:
             driver.get("https://sahyog.bihar.gov.in/Sahyog/LoginAdm.aspx")
@@ -432,31 +430,41 @@ def perform_login(driver):
             captcha_element = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_imgCaptcha")
             captcha_path = "captcha_screenshot.png"
             captcha_element.screenshot(captcha_path)
-            send_telegram_photo(captcha_path, "🚨 SERVER WAKING UP: Please reply with this Captcha code.")
+            send_telegram_photo(captcha_path, f"🚨 SERVER WAKING UP (User: {login_user}): Please reply with this Captcha code.")
             
             resp = wait_for_telegram_reply_or_file("Enter Captcha:")
             captcha_text = resp['text'] if resp['type'] == 'text' else ""
             
-            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtUserName").send_keys(SAHYOG_USER)
-            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtPassword").send_keys(SAHYOG_PASS)
+            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtUserName").send_keys(login_user)
+            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtPassword").send_keys(login_pass)
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtCode").send_keys(captcha_text)
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnLogin").click()
             time.sleep(5)
             
             if len(driver.find_elements(By.XPATH, "//a[contains(text(), 'Grievance Action')]")) > 0:
-                logging.info("✅ Login Successful!")
+                logging.info(f"✅ Login Successful for {login_user}!")
                 break
         except Exception as e: time.sleep(5)
 
 def get_dropdown_options(driver, element_id):
     try:
         select_elem = Select(driver.find_element(By.ID, element_id))
-        return [{"value": opt.get_attribute("value"), "text": opt.text.strip()} 
-                for opt in select_elem.options if opt.get_attribute("value") and opt.get_attribute("value") != "0" and "--" not in opt.text]
+        # REMOVED the '--' filter so '--ALL--' is included, but kept the '0' value filter.
+        # Wait, '--ALL--' usually has value '0'. If we want it, we must allow value '0' for Complaint & Status.
+        options = []
+        for opt in select_elem.options:
+            val = opt.get_attribute("value")
+            text = opt.text.strip()
+            # Allow '0' (ALL) but reject empty values
+            if val is not None and val != "":
+                options.append({"value": val, "text": text})
+        return options
     except: return []
 
-# --- EXTRACTED DROPDOWN PROCESSOR WITH AUTO-RETRY ---
-def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, radio_index=None, radio_name=""):
+# ==========================================
+# SCRAPING ENGINE (WITH SOFT SKIP & POP-UP BYPASS)
+# ==========================================
+def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, current_user, current_pass, radio_index=None, radio_name=""):
     combo_name = f"{t_opt['text']} > {c_opt['text']} > {s_opt['text']}"
     if radio_name: combo_name += f" > {radio_name}"
     
@@ -466,7 +474,6 @@ def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_ro
             driver.switch_to.window(main_tab)
             logging.info(f"🔄 Scanning Filter: {combo_name} (Attempt {attempt+1}/{max_retries})")
 
-            # EXPLICIT UI BUFFERS AND STALENESS CHECKS
             old_status = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")
             Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
             time.sleep(1) 
@@ -484,14 +491,12 @@ def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_ro
             Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterStatus")).select_by_value(s_opt['value'])
             time.sleep(2) 
             
-            # DELEGATED RADIO BUTTON ENGINE RESTORED
             if radio_index is not None:
                 radios = driver.find_elements(By.CSS_SELECTOR, ".delegated-panel .delegated-radio label")
                 if radio_index < len(radios):
                     safe_click(driver, radios[radio_index])
                     time.sleep(2)
             
-            # FORCE TOP RECORDS TO --ALL-- RESTORED
             try: 
                 Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlTopFilter")).select_by_value("0")
             except: pass
@@ -502,8 +507,7 @@ def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_ro
             time.sleep(4)
             verify_page_state(driver)
             
-            # Run the extraction and check if math balances
-            success = run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs)
+            success = run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs, current_user, current_pass)
             
             if success:
                 audit_log.append(metrics)
@@ -526,8 +530,7 @@ def process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_ro
             driver.refresh()
             time.sleep(5)
 
-
-def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs):
+def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, current_user, current_pass):
     WebDriverWait(driver, 30).until(lambda d: len(d.find_elements(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")) > 0)
     type_options = get_dropdown_options(driver, "ctl00_ContentPlaceHolder1_ddlFilterType")
     complaint_options = get_dropdown_options(driver, "ctl00_ContentPlaceHolder1_ddlFilterComplaint")
@@ -536,7 +539,6 @@ def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_ro
     for t_opt in type_options:
         for c_opt in complaint_options:
             for s_opt in status_options:
-                # Dry run to check for Delegated Radios
                 driver.switch_to.window(main_tab)
                 try: Select(driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_ddlFilterType")).select_by_value(t_opt['value'])
                 except: pass
@@ -553,12 +555,11 @@ def perform_scraping_cycle(driver, main_tab, target_output_dir, master_logged_ro
                 
                 if radio_names:
                     for i, r_name in enumerate(radio_names):
-                        process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, radio_index=i, radio_name=r_name)
+                        process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, current_user, current_pass, radio_index=i, radio_name=r_name)
                 else:
-                    process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt)
+                    process_dropdown_combo(driver, main_tab, target_output_dir, master_logged_rows, audit_log, generated_pdfs, t_opt, c_opt, s_opt, current_user, current_pass)
 
-def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs):
-    # 1. Establish the True Expected Total from the Blue Badge
+def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_rows, t_opt, c_opt, s_opt, metrics, generated_pdfs, current_user, current_pass):
     expected_total = 0
     try:
         total_elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Total :') or contains(text(), 'Total:')]")
@@ -569,7 +570,6 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
                 break
     except: pass
 
-    # Fallback if badge fails
     if expected_total == 0:
         expected_total = len(driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card"))
 
@@ -577,27 +577,23 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
     
     if expected_total == 0: 
         logging.info(f"🔍 [FOUND] 0 records in '{metrics['combo']}'. Skipping.")
-        return True # Nothing to process, success!
+        return True 
 
-    # VERBOSE TELEMETRY: SEARCH STARTED
     start_msg = f"🔍 [FOUND] {expected_total} records in '{metrics['combo']}'. Starting extraction..."
     logging.info(start_msg)
     send_telegram_message(start_msg)
 
-    # 2. Force Lazy-Loading by scrolling until all cards appear
     for _ in range(5): 
         cards = driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card")
         if len(cards) >= expected_total: break
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
 
-    # Re-evaluate visible cards
     complaint_cards = driver.find_elements(By.CSS_SELECTOR, ".list-container .complaint-card")
     visible_cards = len(complaint_cards)
     
-    # 3. Extraction Loop
     for card_idx in range(visible_cards):
-        check_session(driver)
+        check_session(driver, current_user, current_pass)
         verify_page_state(driver)
         try:
             driver.switch_to.window(main_tab)
@@ -607,20 +603,23 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
             ref_match = re.search(r'REF\d+', card.text)
             expected_ref = ref_match.group(0) if ref_match else ""
             
+            # --- SOFT SKIP ENGINE (Dynamic Updating) ---
             is_old = False
             for row in master_logged_rows:
                 if row.get("Registration No.") == expected_ref:
-                    try:
-                        last_update = pd.to_datetime(row.get("Last Updated Time", "2000-01-01"))
-                        if (datetime.now() - last_update).total_seconds() / 3600 < CONFIG["recency_threshold_hours"]:
-                            metrics['skipped'] += 1
-                            is_old = True
-                            break
-                    except: pass
+                    # Physically update the memory ledger to the current dropdowns!
+                    row["Type"] = t_opt['text']
+                    row["Category"] = c_opt['text']
+                    row["Status"] = s_opt['text']
+                    row["Last Updated Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     is_old = True
                     break
             
-            if is_old and (datetime.now() - last_update).total_seconds() / 3600 < CONFIG["recency_threshold_hours"]: continue
+            if is_old:
+                # Save the Soft Skip update immediately
+                with open(LEDGER_FILE, 'w', encoding='utf-8') as f: json.dump(master_logged_rows, f, ensure_ascii=False, indent=4)
+                metrics['skipped'] += 1
+                continue
 
             try:
                 delay_elem = card.find_element(By.CSS_SELECTOR, ".delay-box span").text
@@ -644,60 +643,74 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
                 "Pending Days": pending_days, "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
 
-            if is_old:
-                for row in master_logged_rows:
-                    if row.get("Registration No.") == expected_ref: row.update(data); break
-                metrics['skipped'] += 1
-            else:
-                temp_pdf1 = os.path.join(target_output_dir, f"temp_print_{card_idx}.pdf")
-                temp_pdf2 = os.path.join(target_output_dir, f"temp_view_{card_idx}.pdf")
-                
-                hidden_pdf = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_hfPdfComp").get_attribute("value")
-                safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_printing"))
-                WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
-                driver.switch_to.window(driver.window_handles[-1])
-                
+            temp_pdf1 = os.path.join(target_output_dir, f"temp_print_{card_idx}.pdf")
+            temp_pdf2 = os.path.join(target_output_dir, f"temp_view_{card_idx}.pdf")
+            
+            # --- POP-UP BYPASS (Path B) for Primary Print ---
+            safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_printing"))
+            WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
+            driver.switch_to.window(driver.window_handles[-1])
+            
+            try:
+                WebDriverWait(driver, 10).until(lambda d: expected_ref in d.page_source)
+                reg_date = driver.find_element(By.XPATH, "//td[contains(text(), 'Reg.Date')]/following-sibling::td").text.strip()
+                g_type = driver.find_element(By.XPATH, "//td[contains(text(), 'Grievance Type')]/following-sibling::td").text.strip()
+            except: reg_date, g_type = "N/A", "N/A"
+
+            driver.execute_script("document.querySelectorAll('.btn, footer').forEach(e => e.style.display='none')")
+            save_page_as_pdf(driver, temp_pdf1)
+            driver.close()
+            driver.switch_to.window(main_tab)
+
+            # --- POP-UP BYPASS (Path B) for Attachment ---
+            has_sec = False
+            try:
+                pdf_btn = driver.find_elements(By.ID, "ctl00_ContentPlaceHolder1_lnkPdf")
+                if pdf_btn:
+                    # Physically Click the View PDF Button
+                    safe_click(driver, pdf_btn[0])
+                    WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
+                    # Switch to the new tab where the PDF is opening
+                    driver.switch_to.window(driver.window_handles[-1])
+                    time.sleep(2) # Give the portal a moment to generate the URL
+                    
+                    req_url = driver.current_url
+                    resp = requests.get(req_url, cookies={c['name']: c['value'] for c in driver.get_cookies()}, timeout=15)
+                    if resp.status_code == 200 and b"%PDF" in resp.content[:1024]:
+                        with open(temp_pdf2, "wb") as f: f.write(resp.content)
+                        has_sec = True
+                        
+                    driver.close()
+                    driver.switch_to.window(main_tab)
+            except Exception as e:
+                logging.error(f"Error handling attachment popup: {e}")
                 try:
-                    WebDriverWait(driver, 10).until(lambda d: expected_ref in d.page_source)
-                    reg_date = driver.find_element(By.XPATH, "//td[contains(text(), 'Reg.Date')]/following-sibling::td").text.strip()
-                    g_type = driver.find_element(By.XPATH, "//td[contains(text(), 'Grievance Type')]/following-sibling::td").text.strip()
-                except: reg_date, g_type = "N/A", "N/A"
+                    if len(driver.window_handles) > 1:
+                        driver.close()
+                        driver.switch_to.window(main_tab)
+                except: pass
 
-                driver.execute_script("document.querySelectorAll('.btn, footer').forEach(e => e.style.display='none')")
-                save_page_as_pdf(driver, temp_pdf1)
-                driver.close()
-                driver.switch_to.window(main_tab)
+            # --- PDF MERGING ---
+            base_filename = f"{sanitize_filename(expected_ref)}_{sanitize_filename(data['Applicant Name'])}_{sanitize_filename(data['Block Name'])}_{sanitize_filename(data['Panchayat Name'])}"
+            final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
 
-                has_sec = False
-                if hidden_pdf and hidden_pdf.strip():
-                    try:
-                        resp = requests.get(urljoin("https://sahyog.bihar.gov.in/", hidden_pdf.strip()), cookies={c['name']: c['value'] for c in driver.get_cookies()}, timeout=15)
-                        if resp.status_code == 200 and b"%PDF" in resp.content[:1024]:
-                            with open(temp_pdf2, "wb") as f: f.write(resp.content)
-                            has_sec = True
-                    except: pass
+            merger = PdfWriter()
+            if os.path.exists(temp_pdf1): merger.append(temp_pdf1)
+            if has_sec and os.path.exists(temp_pdf2): merger.append(temp_pdf2)
+            merger.write(final_pdf)
+            merger.close()
 
-                base_filename = f"{sanitize_filename(expected_ref)}_{sanitize_filename(data['Applicant Name'])}_{sanitize_filename(data['Block Name'])}_{sanitize_filename(data['Panchayat Name'])}"
-                final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
+            if os.path.exists(temp_pdf1): os.remove(temp_pdf1)
+            if os.path.exists(temp_pdf2): os.remove(temp_pdf2)
 
-                merger = PdfWriter()
-                if os.path.exists(temp_pdf1): merger.append(temp_pdf1)
-                if has_sec and os.path.exists(temp_pdf2): merger.append(temp_pdf2)
-                merger.write(final_pdf)
-                merger.close()
-
-                if os.path.exists(temp_pdf1): os.remove(temp_pdf1)
-                if os.path.exists(temp_pdf2): os.remove(temp_pdf2)
-
-                data["Registration Date"] = reg_date
-                data["Grievance Type"] = g_type
-                master_logged_rows.append(data)
-                
-                # Save ledger immediately so if it crashes, data is perfectly safe
-                with open(LEDGER_FILE, 'w', encoding='utf-8') as f: json.dump(master_logged_rows, f, ensure_ascii=False, indent=4)
-                
-                generated_pdfs.append(final_pdf)
-                metrics['extracted'] += 1
+            data["Registration Date"] = reg_date
+            data["Grievance Type"] = g_type
+            master_logged_rows.append(data)
+            
+            with open(LEDGER_FILE, 'w', encoding='utf-8') as f: json.dump(master_logged_rows, f, ensure_ascii=False, indent=4)
+            
+            generated_pdfs.append(final_pdf)
+            metrics['extracted'] += 1
 
             driver.switch_to.window(main_tab)
             safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnBack"))
@@ -709,23 +722,21 @@ def run_extraction_sequence(driver, main_tab, target_output_dir, master_logged_r
                 safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnBack"))
             except: pass
 
-    # 4. The Accounting Gate: Do the numbers match?
     total_processed = metrics['extracted'] + metrics['skipped'] + metrics['errors']
     
     if total_processed < expected_total:
-        return False # This tells the main loop to REDO this entire filter
+        return False 
         
-    # VERBOSE TELEMETRY: CYCLE COMPLETED SUCCESSFULLY
     summary_msg = (
         f"✅ [COMPLETED] '{metrics['combo']}'\n"
         f"Total Expected: {expected_total}\n"
         f"📥 Extracted: {metrics['extracted']}\n"
-        f"⏭️ Skipped: {metrics['skipped']}\n"
+        f"⏭️ Soft Skipped/Updated: {metrics['skipped']}\n"
         f"❌ Errors: {metrics['errors']}"
     )
     logging.info(summary_msg)
     send_telegram_message(summary_msg)
-    return True # Math matches perfectly, move to next!
+    return True 
 
 def print_audit_report(audit_log):
     logging.info("\n" + "="*85)
@@ -736,7 +747,7 @@ def print_audit_report(audit_log):
         logging.info(f"{row['combo'][:38].ljust(40)} | {str(row['total']).ljust(6)} | {str(row['skipped']).ljust(8)} | {str(row['extracted']).ljust(10)} | {str(row['errors']).ljust(6)}")
         total_found += row['total']; total_skipped += row['skipped']; total_extracted += row['extracted']; total_errors += row['errors']
     logging.info("="*85)
-    logging.info(f"GRAND TOTALS: {total_found} Found | {total_skipped} Skipped | {total_extracted} New | {total_errors} Errors\n")
+    logging.info(f"GRAND TOTALS: {total_found} Found | {total_skipped} Updated/Skipped | {total_extracted} New | {total_errors} Errors\n")
 
 # ==========================================
 # RUN MAIN ASSEMBLY
@@ -761,7 +772,6 @@ def main():
                 os.remove(LEDGER_FILE)
                 send_telegram_message("🗑️ Old ledger deleted. Starting a fresh run.")
         
-        # HISTORICAL SOFT SYNC (TELEGRAM FEATURE RESTORED)
         if not is_resuming:
             msg = "Do you want to load a historical Excel file for Soft Sync? Send the .xlsx file now, or reply 'skip'."
             resp = wait_for_telegram_reply_or_file(msg)
@@ -770,7 +780,6 @@ def main():
                 try:
                     df = pd.read_excel("temp_history.xlsx").fillna("")
                     master_logged_rows = df.to_dict('records')
-                    # Save to ledger instantly so history is preserved
                     with open(LEDGER_FILE, 'w', encoding='utf-8') as f: json.dump(master_logged_rows, f, ensure_ascii=False, indent=4)
                     skip_list = set(r.get("Registration No.") for r in master_logged_rows if r.get("Registration No."))
                     send_telegram_message(f"✅ Database loaded. Syncing {len(skip_list)} historical IDs.")
@@ -784,6 +793,8 @@ def main():
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        # FORCE CLOUD SERVER TO ALLOW POP-UPS (Path B Requirement)
+        chrome_options.add_argument("--disable-popup-blocking") 
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         chrome_options.add_argument("--window-size=1920,1080")
         
@@ -794,17 +805,31 @@ def main():
         target_output_dir = os.path.join(os.getcwd(), f"Sahyog_Shivir_{timestamp}")
         os.makedirs(target_output_dir, exist_ok=True)
 
+        current_user = SAHYOG_USER
+        current_pass = SAHYOG_PASS
+
+        # --- DYNAMIC LOGIN & LOOP ENGINE ---
         while True:
-            perform_login(driver)
+            perform_login(driver, current_user, current_pass)
             try: safe_click(driver, driver.find_element(By.XPATH, "//a[contains(text(), 'Grievance Action')]"))
             except: driver.get("https://sahyog.bihar.gov.in/Sahyog/IGRS_InnerPage/Common/ComplaintAction.aspx")
             verify_page_state(driver)
             
-            perform_scraping_cycle(driver, driver.current_window_handle, target_output_dir, master_logged_rows, audit_log, generated_pdfs)
+            perform_scraping_cycle(driver, driver.current_window_handle, target_output_dir, master_logged_rows, audit_log, generated_pdfs, current_user, current_pass)
             
-            resp = wait_for_telegram_reply_or_file("✅ Data collection complete. Loop another ID? (y/n):")
+            # Request to loop dynamically
+            resp = wait_for_telegram_reply_or_file("✅ Data collection for this ID complete. Loop another ID? (y/n):")
             cont = resp['text'].lower() if resp['type'] == 'text' else 'n'
-            if cont not in ['y', 'yes']: break
+            
+            if cont in ['y', 'yes']:
+                user_resp = wait_for_telegram_reply_or_file("🔄 Please send the NEW User ID:")
+                current_user = user_resp['text'] if user_resp['type'] == 'text' else SAHYOG_USER
+                pass_resp = wait_for_telegram_reply_or_file("🔑 Please send the NEW Password:")
+                current_pass = pass_resp['text'] if pass_resp['type'] == 'text' else SAHYOG_PASS
+                driver.get("https://sahyog.bihar.gov.in/Sahyog/LoginAdm.aspx")
+                time.sleep(2)
+            else:
+                break
 
         run_post_processing(master_logged_rows, target_output_dir, timestamp, generated_pdfs)
         print_audit_report(audit_log)
