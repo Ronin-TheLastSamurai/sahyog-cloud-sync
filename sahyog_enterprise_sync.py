@@ -136,8 +136,8 @@ PANCHAYAT_MAP = {
     ('Nagra', 'JAGADISHPUR'): ('BANIYAPUR', 'NAGRA'), ('Nagra', 'KADIPUR'): ('BANIYAPUR', 'NAGRA'),
     ('Nagra', 'KHAIRA'): ('BANIYAPUR', 'NAGRA'), ('Nagra', 'KOREA'): ('BANIYAPUR', 'NAGRA'),
     ('Nagra', 'TAKIA'): ('BANIYAPUR', 'NAGRA'), ('Nagra', 'TUJAR PUR'): ('BANIYAPUR', 'NAGRA'),
-    ('Baniapur', 'BANIAPUR'): ('BANIYAPUR', 'BANIAPUR'), ('Baniapur', 'KAMTA'): ('BANIYAPUR', 'BANIAPUR'),
-    ('Baniapur', 'BEDAULI'): ('BANIYAPUR', 'BANIAPUR'), ('Baniapur', 'BHUSHAW'): ('BANIYAPUR', 'BANIAPUR'),
+    ('Baniapur', 'BANIAPUR'): ('BANIYAPUR', 'BANIYAPUR'), ('Baniapur', 'KAMTA'): ('BANIYAPUR', 'BANIYAPUR'),
+    ('Baniapur', 'BEDAULI'): ('BANIYAPUR', 'BANIYAPUR'), ('Baniapur', 'BHUSHAW'): ('BANIYAPUR', 'BANIYAPUR'),
     ('Baniapur', 'HARPUR'): ('BANIYAPUR', 'BANIYAPUR'), ('Baniapur', 'KANHAULI MANOHAR'): ('BANIYAPUR', 'BANIYAPUR'),
     ('Baniapur', 'KARHI'): ('BANIYAPUR', 'BANIYAPUR'), ('Baniapur', 'KRAH'): ('BANIYAPUR', 'BANIYAPUR'),
     ('Baniapur', 'PAIGAMBAR PUR'): ('BANIYAPUR', 'BANIYAPUR'), ('Baniapur', 'PIRAUTA KHAS'): ('BANIYAPUR', 'BANIYAPUR'),
@@ -336,6 +336,33 @@ def get_subdivision_section(block, panchayat):
     if not subdiv and block == "Chapra":
         subdiv, section = "CHAPRA(RURAL)", "UNKNOWN_SECTION"
     return subdiv, section
+
+def verify_page_state(driver):
+    for attempt in range(3):
+        try:
+            page_src = driver.page_source.lower()
+            if "server error" in page_src or "500 - internal server error" in page_src:
+                wait_time = 5 if attempt == 0 else 120
+                logging.error(f"Server Error! Retry {attempt+1}/3. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+                driver.refresh()
+                time.sleep(3)
+            else: return True
+        except: pass
+    msg = "❌ CRITICAL: Server Error persists. Manual intervention required.\nReply 'continue' once stable."
+    wait_for_telegram_reply_or_file(msg)
+    return True
+
+def check_session(driver, current_user, current_pass):
+    try:
+        driver.find_element(By.ID, "ctl00_lblwelcome")
+        return True
+    except:
+        msg = "🚨 SESSION EXPIRED! Triggering re-login flow..."
+        logging.warning(msg)
+        send_telegram_message(msg)
+        perform_login(driver, current_user, current_pass)
+        return True
 
 # ==========================================
 # AUTH & DYNAMIC LOGIN ENGINE
@@ -769,6 +796,7 @@ def main():
                         for row_idx in range(detail_rows_count):
                             driver.switch_to.window(main_tab)
                             check_session(driver, current_user, current_pass)
+                            verify_page_state(driver)
                             try:
                                 d_row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]")[row_idx]
                                 d_cols = d_row.find_elements(By.TAG_NAME, "td")
@@ -1009,7 +1037,16 @@ def main():
             run_post_processing(master_data, target_output_dir, timestamp, generated_pdfs)
             
         logging.info(f"Process Complete. Detailed logs saved to: {log_filename}")
-        send_telegram_document(log_filename)  # Send the full log file before stopping
+        send_telegram_document(log_filename)
+
+    # 🌍 GLOBAL ERROR HANDLER 🌍
+    except Exception as e:
+        error_msg = f"💥 CRITICAL BOT FAILURE:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()[-1000:]}"
+        logging.critical(error_msg)
+        try:
+            send_telegram_message(error_msg)
+        except:
+            pass # Fail silently if Telegram itself is down
 
     finally:
         try: driver.quit()
