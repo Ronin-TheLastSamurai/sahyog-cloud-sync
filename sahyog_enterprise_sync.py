@@ -649,6 +649,8 @@ def main():
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-popup-blocking") 
+        chrome_options.add_argument("--ignore-certificate-errors") # <--- SSL BYPASS 1
+        chrome_options.set_capability("acceptInsecureCerts", True)   # <--- SSL BYPASS 2
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         chrome_options.add_argument("--window-size=1920,1080")
         
@@ -911,13 +913,33 @@ def main():
 
                                 logging.info(f" 📎 Fetching Attached Document for {ack_no}...")
                                 try:
+                                    # Locate the base64 string
                                     match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
+                                    
+                                    # If not immediately visible, it might be behind the "View PDF" button (IDoc.aspx)
+                                    if not match:
+                                        pdf_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'IDoc.aspx')]")
+                                        if pdf_links:
+                                            safe_click(driver, pdf_links[0])
+                                            WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 3)
+                                            attach_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab, detail_tab]][0]
+                                            driver.switch_to.window(attach_tab)
+                                            # Wait for the base64 payload to load in the insecure tab
+                                            WebDriverWait(driver, 15).until(lambda d: "JVBER" in d.page_source)
+                                            match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
+                                            
                                     if match:
                                         pdf_bytes = base64.b64decode(match.group(1).replace('\n', '').replace('\r', '').replace(' ', ''))
                                         if pdf_bytes.startswith(b'%PDF'):
                                             with open(temp_pdf2, "wb") as f: f.write(pdf_bytes)
                                             has_sec_pdf = True
-                                except Exception as e: logging.error(f"Failed to extract attached PDF for {ack_no}: {e}")
+                                            
+                                except Exception as e: 
+                                    logging.error(f"Failed to extract attached PDF for {ack_no}: {e}")
+                                finally:
+                                    # Always ensure we fall back to the detail tab
+                                    close_extra_tabs(driver, [main_tab, print_tab, detail_tab])
+                                    driver.switch_to.window(detail_tab)
 
                                 base_filename = f"{sanitize_filename(ack_no)}_{sanitize_filename(row_data['Applicant Name'])}_{sanitize_filename(row_data['Applicant Block'])}"
                                 final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
@@ -1046,7 +1068,7 @@ def main():
         try:
             send_telegram_message(error_msg)
         except:
-            pass # Fail silently if Telegram itself is down
+            pass 
 
     finally:
         try: driver.quit()
