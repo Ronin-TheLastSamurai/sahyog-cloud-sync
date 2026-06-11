@@ -355,7 +355,6 @@ def verify_page_state(driver):
 
 def check_session(driver, current_user, current_pass):
     try:
-        # PATCHED: Using flexible XPATH to bypass the missing 'ctl00_' UI update
         driver.find_element(By.XPATH, "//*[contains(@id, 'lblwelcome')]")
         return True
     except:
@@ -375,7 +374,6 @@ def perform_login(driver, login_user, login_pass):
             driver.get("https://sahyog.bihar.gov.in/Sahyog/LoginAdm.aspx")
             time.sleep(4)
             
-            # PATCHED: Updated IDs for the new website deployment (removed ctl00_)
             captcha_element = driver.find_element(By.ID, "ContentPlaceHolder1_imgCaptcha")
             captcha_path = "captcha_screenshot.png"
             captcha_element.screenshot(captcha_path)
@@ -612,7 +610,7 @@ def main():
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.13.1 - GROUP CHAT PRODUCTION & LOOP PROTECTION ACTIVE")
+        logging.info("   SAHYOG V4.14 - GROUP CHAT PRODUCTION & LOOP PROTECTION ACTIVE")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
         send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
@@ -684,13 +682,13 @@ def main():
                     wait_for_ajax(driver)
                     time.sleep(3) 
 
-                    # 1. Department Selection
+                    # 1. Department Selection (IDs updated)
                     dept_clicked = False
                     for trial in range(3):
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDepartmentReport", timeout=10): 
+                        if not wait_for_table(driver, "ContentPlaceHolder1_gvDepartmentReport", timeout=10): 
                             break
                         
-                        dept_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvDepartmentReport")
+                        dept_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvDepartmentReport")
                         found = False
                         for row in dept_table.find_elements(By.TAG_NAME, "tr")[1:]:
                             cols = row.find_elements(By.TAG_NAME, "td")
@@ -702,7 +700,7 @@ def main():
                                 break
                         
                         if found:
-                            if wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDistrictWise", timeout=5):
+                            if wait_for_table(driver, "ContentPlaceHolder1_gvDistrictWise", timeout=5):
                                 dept_clicked = True
                                 break
                             else:
@@ -715,13 +713,13 @@ def main():
                         logging.warning("⚠️ Failed to verify Department click. Reloading Soft Loop...")
                         continue 
 
-                    # 2. District Selection
+                    # 2. District Selection (IDs updated)
                     dist_clicked = False
                     for trial in range(3):
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDistrictWise", timeout=10): 
+                        if not wait_for_table(driver, "ContentPlaceHolder1_gvDistrictWise", timeout=10): 
                             break
                         
-                        dist_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvDistrictWise")
+                        dist_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvDistrictWise")
                         found = False
                         for row in dist_table.find_elements(By.TAG_NAME, "tr")[1:-1]:
                             cols = row.find_elements(By.TAG_NAME, "td")
@@ -733,7 +731,7 @@ def main():
                                 break
                                 
                         if found:
-                            if wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock", timeout=5):
+                            if wait_for_table(driver, "ContentPlaceHolder1_gvBlock", timeout=5):
                                 dist_clicked = True
                                 break
                             else:
@@ -746,10 +744,10 @@ def main():
                         logging.warning("⚠️ Failed to verify District click. Reloading Soft Loop...")
                         continue
 
-                    # Block Count
-                    if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock"): continue
+                    # Block Count (IDs updated)
+                    if not wait_for_table(driver, "ContentPlaceHolder1_gvBlock"): continue
                     try:
-                        block_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvBlock']//tr")) - 2
+                        block_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvBlock']//tr")) - 2
                     except Exception:
                         logging.warning("⚠️ Failed to count block rows. Retrying Soft Loop...")
                         continue
@@ -761,7 +759,7 @@ def main():
                         driver.switch_to.window(main_tab)
                         
                         try:
-                            row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvBlock']//tr")[i]
+                            row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvBlock']//tr")[i]
                             cols = row.find_elements(By.TAG_NAME, "td")
                             block_name = cols[1].text.strip()
                             pending_count = int(cols[3].text.strip()) if cols[3].text.strip().isdigit() else 0
@@ -791,11 +789,11 @@ def main():
                         time.sleep(1) 
                         wait_for_ajax(driver)
                         
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDetails"):
+                        if not wait_for_table(driver, "ContentPlaceHolder1_gvDetails"):
                             block_loop_crashed = True
                             break
 
-                        detail_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]"))
+                        detail_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1]"))
                         handled_this_block = 0
                         
                         # Detail Grid Loop
@@ -804,7 +802,7 @@ def main():
                             check_session(driver, SAHYOG_USER, SAHYOG_PASS)
                             verify_page_state(driver)
                             try:
-                                d_row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]")[row_idx]
+                                d_row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1]")[row_idx]
                                 d_cols = d_row.find_elements(By.TAG_NAME, "td")
                                 if len(d_cols) < 23: continue
                                 
@@ -866,8 +864,8 @@ def main():
                                 temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
 
                                 try:
-                                    wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvpreview", 5)
-                                    preview_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvpreview")
+                                    wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
+                                    preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
                                     data_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
                                     tds = data_row.find_elements(By.TAG_NAME, "td")
                                     
@@ -885,7 +883,7 @@ def main():
                                 except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
 
                                 try:
-                                    del_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_grdDelegate")
+                                    del_table = driver.find_element(By.ID, "ContentPlaceHolder1_grdDelegate")
                                     del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[2]").text.strip()
                                     del_stat = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
                                     del_date = del_table.find_element(By.XPATH, ".//tr[2]/td[4]").text.strip()
@@ -893,7 +891,7 @@ def main():
                                 except: pass
 
                                 try:
-                                    hist_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_Gvforwarding")
+                                    hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
                                     hist_row = hist_table.find_element(By.XPATH, ".//tbody/tr[1]")
                                     hist_off = hist_row.find_element(By.XPATH, "./td[2]").text.strip()
                                     hist_date = hist_row.find_element(By.XPATH, "./td[3]").text.strip()
@@ -976,10 +974,10 @@ def main():
                         else:
                             logging.warning(f" ⚠️ Block {block_name} incomplete. Scheduled for Soft Recovery.")
 
-                        safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnClose"))
+                        safe_click(driver, driver.find_element(By.ID, "ContentPlaceHolder1_btnClose"))
                         time.sleep(1) 
                         wait_for_ajax(driver)
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock", timeout=15):
+                        if not wait_for_table(driver, "ContentPlaceHolder1_gvBlock", timeout=15):
                             logging.warning("⚠️ Failed to load Block List after backtracking. Triggering Soft Recovery...")
                             block_loop_crashed = True
                             break
@@ -1025,7 +1023,7 @@ def main():
                         time.sleep(3)
                         continue 
                 
-                # --- THIS IS THE RESTORED BLOCK THAT CATCHES BROWSER CRASHES ---
+                # Catch Browser Crashes
             except (InvalidSessionIdException, WebDriverException) as fatal_e:
                 logging.critical(f" [FATAL FAIL] Browser Connection Lost. Hard Recovery Restarting... Error: {fatal_e}")
                 time.sleep(5)
