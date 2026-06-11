@@ -355,7 +355,8 @@ def verify_page_state(driver):
 
 def check_session(driver, current_user, current_pass):
     try:
-        driver.find_element(By.ID, "ctl00_lblwelcome")
+        # PATCHED: Using flexible XPATH to bypass the missing 'ctl00_' UI update
+        driver.find_element(By.XPATH, "//*[contains(@id, 'lblwelcome')]")
         return True
     except:
         msg = "🚨 SESSION EXPIRED! Triggering re-login flow..."
@@ -373,7 +374,9 @@ def perform_login(driver, login_user, login_pass):
         try:
             driver.get("https://sahyog.bihar.gov.in/Sahyog/LoginAdm.aspx")
             time.sleep(4)
-            captcha_element = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_imgCaptcha")
+            
+            # PATCHED: Updated IDs for the new website deployment (removed ctl00_)
+            captcha_element = driver.find_element(By.ID, "ContentPlaceHolder1_imgCaptcha")
             captcha_path = "captcha_screenshot.png"
             captcha_element.screenshot(captcha_path)
             send_telegram_photo(captcha_path, f"🚨 SERVER WAKING UP (User: {login_user}): Please reply with this Captcha code. (Attempt {attempt+1}/{max_retries})")
@@ -381,10 +384,10 @@ def perform_login(driver, login_user, login_pass):
             resp = wait_for_telegram_reply_or_file("Enter Captcha:")
             captcha_text = resp['text'] if resp['type'] == 'text' else ""
             
-            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtUserName").send_keys(login_user)
-            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtPassword").send_keys(login_pass)
-            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtCode").send_keys(captcha_text)
-            driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnLogin").click()
+            driver.find_element(By.ID, "ContentPlaceHolder1_txtUserName").send_keys(login_user)
+            driver.find_element(By.ID, "ContentPlaceHolder1_txtPassword").send_keys(login_pass)
+            driver.find_element(By.ID, "ContentPlaceHolder1_txtCode").send_keys(captcha_text)
+            driver.find_element(By.ID, "ContentPlaceHolder1_btnLogin").click()
             
             WebDriverWait(driver, 15).until(lambda d: len(d.find_elements(By.XPATH, "//a[contains(text(), 'Grievance Action')]")) > 0)
             logging.info(f"✅ Login Successful for {login_user}!")
@@ -564,7 +567,7 @@ def save_safe_df(data_list, filename, target_output_dir):
 
 def run_post_processing(master_data, target_output_dir, timestamp, generated_pdfs):
     try:
-        msg = "⚙️ Commencing Data Split & Final Uploads..."
+        msg = "⚙️ Commencing Data Split & Final Group Uploads..."
         logging.info(msg)
         send_telegram_message(msg)
         
@@ -602,22 +605,22 @@ def run_post_processing(master_data, target_output_dir, timestamp, generated_pdf
         logging.error(traceback.format_exc())
 
 # ==========================================
-# 6. DUAL-LOOP ARCHITECTURE ENGINE
+# 6. SINGLE-PASS PRODUCTION ENGINE
 # ==========================================
 def main():
     toggle_webhook(False)
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.11 - STATE VERIFICATION & SMART MERGE (CLOUD READY)")
+        logging.info("   SAHYOG V4.13 - GROUP CHAT PRODUCTION & LOOP PROTECTION ACTIVE")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
-        send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Mode)...")
+        send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
 
         extracted_ack_set = set()
         previous_df = pd.DataFrame()
         
-        # HISTORICAL SOFT SYNC (TELEGRAM FEATURE)
+        # HISTORICAL SOFT SYNC (TELEGRAM GROUP CHAT FEATURE)
         msg = "Do you want to load a historical Excel file for Soft Sync? Send the .xlsx file now, or reply 'skip'."
         resp = wait_for_telegram_reply_or_file(msg)
         if resp['type'] == 'file' and resp['name'].endswith(('.xls', '.xlsx')):
@@ -643,437 +646,421 @@ def main():
         generated_pdfs = []
         block_status = {} 
 
-        # CLOUD CHROME CONFIGURATION
+        # HEADLESS CHROME ARCHITECTURE WITH SSL BYPASS
         chrome_options = Options()
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-popup-blocking") 
-        chrome_options.add_argument("--ignore-certificate-errors") # <--- SSL BYPASS 1
-        chrome_options.set_capability("acceptInsecureCerts", True)   # <--- SSL BYPASS 2
+        chrome_options.add_argument("--ignore-certificate-errors")
+        chrome_options.set_capability("acceptInsecureCerts", True)
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         chrome_options.add_argument("--window-size=1920,1080")
         
         driver = webdriver.Chrome(options=chrome_options)
         driver.set_page_load_timeout(45)
 
-        current_user = SAHYOG_USER
-        current_pass = SAHYOG_PASS
+        main_tab = driver.current_window_handle
+        
+        # Execute Login Once (No dynamic prompts)
+        perform_login(driver, SAHYOG_USER, SAHYOG_PASS)
 
-        # ================= THE HARD LOOP =================
-        while True:
-            try:
-                main_tab = driver.current_window_handle
+        driver.execute_script("window.open('about:blank', 'print_tab');")
+        WebDriverWait(driver, 5).until(lambda d: len(d.window_handles) > 1)
+        print_tab = [h for h in driver.window_handles if h != main_tab][0]
+
+        # LOOP PROTECTION SAFETY ENGINE
+        recovery_attempts = 0
+        MAX_RECOVERY_ATTEMPTS = 5
+
+        # ================= THE SOFT RECOVERY LOOP =================
+        while True: 
+            logging.info("\n 🔄 Initiating Drilldown Routine...")
+            drilldown_url = "https://sahyog.bihar.gov.in/Sahyog/IGRS_InnerPage/Reports/DepartmentWiseConsolidatedReport.aspx"
+            driver.get(drilldown_url)
+            wait_for_ajax(driver)
+            time.sleep(3) 
+
+            # 1. Department Selection
+            dept_clicked = False
+            for trial in range(3):
+                if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDepartmentReport", timeout=10): 
+                    break
                 
-                # Cloud Login
-                perform_login(driver, current_user, current_pass)
-
-                driver.execute_script("window.open('about:blank', 'print_tab');")
-                WebDriverWait(driver, 5).until(lambda d: len(d.window_handles) > 1)
-                print_tab = [h for h in driver.window_handles if h != main_tab][0]
-
-                # ================= THE SOFT LOOP =================
-                while True: 
-                    logging.info("\n 🔄 Initiating Drilldown Routine...")
-                    drilldown_url = "https://sahyog.bihar.gov.in/Sahyog/IGRS_InnerPage/Reports/DepartmentWiseConsolidatedReport.aspx"
-                    driver.get(drilldown_url)
-                    wait_for_ajax(driver)
-                    time.sleep(3) 
-
-                    # 1. Department Selection
-                    dept_clicked = False
-                    for trial in range(3):
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDepartmentReport", timeout=10): 
-                            break
-                        
-                        dept_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvDepartmentReport")
-                        found = False
-                        for row in dept_table.find_elements(By.TAG_NAME, "tr")[1:]:
-                            cols = row.find_elements(By.TAG_NAME, "td")
-                            if len(cols) > 1 and CONFIG["target_department"].lower() in cols[1].text.lower():
-                                safe_click(driver, cols[1].find_element(By.TAG_NAME, "a"))
-                                time.sleep(1) 
-                                wait_for_ajax(driver)
-                                found = True
-                                break
-                        
-                        if found:
-                            if wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDistrictWise", timeout=5):
-                                dept_clicked = True
-                                break
-                            else:
-                                logging.warning(f"⚠️ 'Energy' click failed to load next page (Trial {trial + 1}/3). Retrying click...")
-                        else:
-                            logging.warning("⚠️ 'Energy' department row not found. May have 0 pending complaints.")
-                            break
-
-                    if not dept_clicked:
-                        logging.warning("⚠️ Failed to verify Department click. Reloading Soft Loop...")
-                        continue 
-
-                    # 2. District Selection
-                    dist_clicked = False
-                    for trial in range(3):
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDistrictWise", timeout=10): 
-                            break
-                        
-                        dist_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvDistrictWise")
-                        found = False
-                        for row in dist_table.find_elements(By.TAG_NAME, "tr")[1:-1]:
-                            cols = row.find_elements(By.TAG_NAME, "td")
-                            if len(cols) > 1 and CONFIG["target_district"].lower() in cols[1].text.lower():
-                                safe_click(driver, cols[1].find_element(By.TAG_NAME, "a"))
-                                time.sleep(1) 
-                                wait_for_ajax(driver)
-                                found = True
-                                break
-                                
-                        if found:
-                            if wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock", timeout=5):
-                                dist_clicked = True
-                                break
-                            else:
-                                logging.warning(f"⚠️ District click failed to load next page (Trial {trial + 1}/3). Retrying click...")
-                        else:
-                            logging.warning("⚠️ Target District row not found.")
-                            break
-                    
-                    if not dist_clicked:
-                        logging.warning("⚠️ Failed to verify District click. Reloading Soft Loop...")
-                        continue
-
-                    # Block Count
-                    if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock"): continue
-                    try:
-                        block_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvBlock']//tr")) - 2
-                    except Exception:
-                        logging.warning("⚠️ Failed to count block rows. Retrying Soft Loop...")
-                        continue
-
-                    block_loop_crashed = False
-
-                    # Block Loop
-                    for i in range(1, block_rows_count + 1):
-                        driver.switch_to.window(main_tab)
-                        
-                        try:
-                            row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvBlock']//tr")[i]
-                            cols = row.find_elements(By.TAG_NAME, "td")
-                            block_name = cols[1].text.strip()
-                            pending_count = int(cols[3].text.strip()) if cols[3].text.strip().isdigit() else 0
-                        except IndexError:
-                            logging.warning(f"⚠️ Server sent a broken Block List page (Missing row index {i}). Triggering Soft Recovery...")
-                            block_loop_crashed = True
-                            break
-                        except Exception as e:
-                            logging.warning(f"⚠️ Unexpected error parsing Block List row {i}: {e}. Triggering Soft Recovery...")
-                            block_loop_crashed = True
-                            break
-                        
-                        if block_name not in block_status:
-                            block_status[block_name] = {'expected': pending_count, 'success': False, 'handled': 0}
-                        else:
-                            block_status[block_name]['expected'] = pending_count 
-                        
-                        if pending_count == 0 or block_status[block_name]['success']:
-                            logging.debug(f"Skipping {block_name} - Already Complete or 0 Pending.")
-                            continue
-                            
-                        block_start_msg = f"📍 [BLOCK START] Entering {block_name} (Expected: {pending_count})"
-                        logging.info(block_start_msg)
-                        send_telegram_message(block_start_msg)
-                        
-                        safe_click(driver, cols[3].find_element(By.TAG_NAME, "a"))
+                dept_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvDepartmentReport")
+                found = False
+                for row in dept_table.find_elements(By.TAG_NAME, "tr")[1:]:
+                    cols = row.find_elements(By.TAG_NAME, "td")
+                    if len(cols) > 1 and CONFIG["target_department"].lower() in cols[1].text.lower():
+                        safe_click(driver, cols[1].find_element(By.TAG_NAME, "a"))
                         time.sleep(1) 
                         wait_for_ajax(driver)
-                        
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDetails"):
-                            block_loop_crashed = True
-                            break
-
-                        detail_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]"))
-                        handled_this_block = 0
-                        
-                        # Detail Grid Loop
-                        for row_idx in range(detail_rows_count):
-                            driver.switch_to.window(main_tab)
-                            check_session(driver, current_user, current_pass)
-                            verify_page_state(driver)
-                            try:
-                                d_row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]")[row_idx]
-                                d_cols = d_row.find_elements(By.TAG_NAME, "td")
-                                if len(d_cols) < 23: continue
-                                
-                                ack_no = d_cols[1].text.strip()
-                                
-                                g_block = d_cols[14].text.strip()
-                                g_panch = d_cols[15].text.strip()
-                                subdiv, section = get_subdivision_section(g_block, g_panch)
-
-                                row_data = {
-                                    "S.No.": d_cols[0].text, "Registration No.": ack_no, "Application Type": d_cols[2].text,
-                                    "Applicant Name": d_cols[3].text, "Mobile No": d_cols[4].text, "Department Name": d_cols[5].text,
-                                    "Complaint Status": d_cols[6].text, "Applicant District": d_cols[7].text, "Applicant Block": d_cols[8].text,
-                                    "Applicant Panchayat": d_cols[9].text, "Applicant Police Station": d_cols[10].text, 
-                                    "Grievance Division": d_cols[11].text, "Grievance District": d_cols[12].text, 
-                                    "Grievance Sub Division": d_cols[13].text, "Grievance Block": g_block, 
-                                    "Grievance Panchayat": g_panch, "Grievance Police Station": d_cols[16].text, 
-                                    "Grievance Type": d_cols[17].text, "Designation": d_cols[18].text, "Designation Level": d_cols[19].text,
-                                    "Delegated Status": d_cols[20].text, "Pending Duration (Level 1)": d_cols[21].text, 
-                                    "Delegation Duration (Days)": d_cols[22].text,
-                                    "Subdivision": subdiv, "Section": section
-                                }
-                                
-                                # IN-FLIGHT SMART MERGE
-                                if ack_no in extracted_ack_set:
-                                    old_row = None
-                                    if not previous_df.empty:
-                                        ref_col = "Registration No." if "Registration No." in previous_df.columns else "Ack No"
-                                        match = previous_df[previous_df[ref_col].astype(str).str.strip() == ack_no]
-                                        if not match.empty:
-                                            old_row = match.iloc[0].to_dict()
-                                    
-                                    if old_row:
-                                        merged_data = row_data.copy()
-                                        deep_keys = ["Registration Date", "Father's Name", "Email", "Full Address", "Pincode", 
-                                                     "Grievance Description", "Delegated To Officer", "Delegated Action Status",
-                                                     "Delegated Action Date", "Delegated Remarks", "History Officer Details",
-                                                     "History Action Date", "History Feedback", "History Remarks"]
-                                        for key in deep_keys:
-                                            merged_data[key] = clean_for_excel(old_row.get(key, "N/A"))
-                                        
-                                        merged_data["Last Updated Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        master_data.append(merged_data)
-                                        handled_this_block += 1
-                                        continue 
-                                
-                                ack_url = d_cols[1].find_element(By.TAG_NAME, "a").get_attribute("href")
-                                driver.execute_script(f"window.open('{ack_url}', '_blank');")
-                                WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) >= 3)
-                                detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
-                                driver.switch_to.window(detail_tab)
-                                
-                                desc, del_off, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
-                                app_date, father_name, email, full_address, pincode = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                has_sec_pdf = False
-                                
-                                temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
-                                temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
-
-                                try:
-                                    wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvpreview", 5)
-                                    preview_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvpreview")
-                                    data_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
-                                    tds = data_row.find_elements(By.TAG_NAME, "td")
-                                    
-                                    applicant_dict = parse_cell_data(tds[1].text)
-                                    father_name = applicant_dict.get("Father/Husband Name", "N/A")
-                                    
-                                    address_dict = parse_cell_data(tds[2].text)
-                                    full_address = address_dict.get("Address", "N/A")
-                                    pincode = address_dict.get("PinCode", "N/A")
-                                    
-                                    app_dict = parse_cell_data(tds[3].text)
-                                    app_date = app_dict.get("Date", "N/A")
-                                    
-                                    desc = tds[5].text.strip()
-                                except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
-
-                                try:
-                                    del_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_grdDelegate")
-                                    del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[2]").text.strip()
-                                    del_stat = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
-                                    del_date = del_table.find_element(By.XPATH, ".//tr[2]/td[4]").text.strip()
-                                    del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[5]").text.strip()
-                                except: pass
-
-                                try:
-                                    hist_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_Gvforwarding")
-                                    hist_row = hist_table.find_element(By.XPATH, ".//tbody/tr[1]")
-                                    hist_off = hist_row.find_element(By.XPATH, "./td[2]").text.strip()
-                                    hist_date = hist_row.find_element(By.XPATH, "./td[3]").text.strip()
-                                    hist_feed = hist_row.find_element(By.XPATH, "./td[4]").text.strip()
-                                    hist_rem = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
-                                except: pass
-
-                                row_data.update({
-                                    "Father's Name": father_name, "Email": email, "Full Address": full_address, "Pincode": pincode,
-                                    "Registration Date": app_date, "Grievance Description": desc, 
-                                    "Delegated To Officer": del_off, "Delegated Action Status": del_stat,
-                                    "Delegated Action Date": del_date, "Delegated Remarks": del_rem, 
-                                    "History Officer Details": hist_off, "History Action Date": hist_date, 
-                                    "History Feedback": hist_feed, "History Remarks": hist_rem,
-                                    "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                                for k in row_data: row_data[k] = clean_for_excel(row_data[k])
-
-                                logging.info(f" 🖨️  Generating Executive Blue PDF for {ack_no}...")
-                                generate_replica_pdf(driver, print_tab, detail_tab, row_data, temp_pdf1)
-
-                                logging.info(f" 📎 Fetching Attached Document for {ack_no}...")
-                                try:
-                                    # Locate the base64 string
-                                    match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
-                                    
-                                    # If not immediately visible, it might be behind the "View PDF" button (IDoc.aspx)
-                                    if not match:
-                                        pdf_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'IDoc.aspx')]")
-                                        if pdf_links:
-                                            safe_click(driver, pdf_links[0])
-                                            WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 3)
-                                            attach_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab, detail_tab]][0]
-                                            driver.switch_to.window(attach_tab)
-                                            # Wait for the base64 payload to load in the insecure tab
-                                            WebDriverWait(driver, 15).until(lambda d: "JVBER" in d.page_source)
-                                            match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
-                                            
-                                    if match:
-                                        pdf_bytes = base64.b64decode(match.group(1).replace('\n', '').replace('\r', '').replace(' ', ''))
-                                        if pdf_bytes.startswith(b'%PDF'):
-                                            with open(temp_pdf2, "wb") as f: f.write(pdf_bytes)
-                                            has_sec_pdf = True
-                                            
-                                except Exception as e: 
-                                    logging.error(f"Failed to extract attached PDF for {ack_no}: {e}")
-                                finally:
-                                    # Always ensure we fall back to the detail tab
-                                    close_extra_tabs(driver, [main_tab, print_tab, detail_tab])
-                                    driver.switch_to.window(detail_tab)
-
-                                base_filename = f"{sanitize_filename(ack_no)}_{sanitize_filename(row_data['Applicant Name'])}_{sanitize_filename(row_data['Applicant Block'])}"
-                                final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
-
-                                merger = PdfWriter()
-                                if os.path.exists(temp_pdf1) and is_valid_pdf(temp_pdf1): merger.append(temp_pdf1)
-                                if has_sec_pdf and is_valid_pdf(temp_pdf2): merger.append(temp_pdf2)
-                                if os.path.exists(temp_pdf1) or has_sec_pdf: merger.write(final_pdf)
-                                merger.close()
-
-                                if os.path.exists(temp_pdf1): os.remove(temp_pdf1)
-                                if os.path.exists(temp_pdf2): os.remove(temp_pdf2)
-
-                                master_data.append(row_data)
-                                extracted_ack_set.add(ack_no)
-                                handled_this_block += 1
-                                generated_pdfs.append(final_pdf)
-
-                                if len(master_data) % CONFIG["excel_save_batch_size"] == 0:
-                                    save_safe_df(master_data, f"Sahyog_Data_TMP_{timestamp}.xlsx", target_output_dir)
-
-                            except Exception as row_e:
-                                logging.error(f"Failed to process row {ack_no}: {row_e}")
-                            finally:
-                                close_extra_tabs(driver, [main_tab, print_tab])
-                                driver.switch_to.window(main_tab)
-                        
-                        block_status[block_name]['handled'] = handled_this_block
-                        if handled_this_block >= pending_count:
-                            block_status[block_name]['success'] = True
-                            block_end_msg = f" ✅ Block {block_name} 100% Complete."
-                            logging.info(block_end_msg)
-                            send_telegram_message(block_end_msg)
-                        else:
-                            logging.warning(f" ⚠️ Block {block_name} incomplete. Scheduled for Soft Recovery.")
-
-                        safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnClose"))
-                        time.sleep(1) 
-                        wait_for_ajax(driver)
-                        if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock", timeout=15):
-                            logging.warning("⚠️ Failed to load Block List after backtracking. Triggering Soft Recovery...")
-                            block_loop_crashed = True
-                            break
-
-                    if block_loop_crashed:
-                        pass
-
-                    # --- SOFT LOOP AUDIT ---
-                    all_success = True
-                    total_expected, total_handled = 0, 0
-                    
-                    for b, st in block_status.items():
-                        total_expected += st['expected']
-                        total_handled += st.get('handled', 0)
-                        if st['expected'] > 0 and not st['success']: all_success = False
-
-                    audit_str = "\n".join([f"{block.ljust(15)} | Exp: {stats['expected']} | Ext: {stats.get('handled', 0)} | {'✅' if stats.get('success') else '❌'}" for block, stats in block_status.items() if stats['expected'] > 0])
-                    
-                    logging.info("\n" + "="*80)
-                    logging.info("                      CYCLE AUDIT REPORT")
-                    logging.info("="*80)
-                    logging.info("\n" + audit_str)
-                    
-                    if all_success:
-                        success_msg = f"✅ 100% INTEGRITY REACHED ({total_handled}/{total_expected}). BREAKING SOFT LOOP."
-                        logging.info(success_msg)
-                        send_telegram_message(success_msg)
-                        break 
+                        found = True
+                        break
+                
+                if found:
+                    if wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDistrictWise", timeout=5):
+                        dept_clicked = True
+                        break
                     else:
-                        missing = total_expected - total_handled
-                        fail_msg = f"⚠️ AUDIT FAILED: Expected {total_expected}, but only handled {total_handled}. Missing {missing}.\n🔄 Executing SMART SOFT-RECOVERY..."
-                        logging.warning(fail_msg)
-                        send_telegram_message(fail_msg)
-                        time.sleep(3)
-                        continue 
-                
-                # --- FINAL AUDIT REPORT SENT VIA TELEGRAM ---
-                final_audit_msg = (
-                    f"📊 *Final Sahyog Sync Audit Report*\n\n"
-                    f"📅 Date: {datetime.now().strftime('%d-%m-%Y')}\n"
-                    f"🎯 Target District: {CONFIG['target_district']}\n\n"
-                    f"📥 *Records Summary:*\n"
-                    f"  • Total Expected: {total_expected}\n"
-                    f"  • Total Downloaded: {total_handled}\n"
-                )
-                if total_expected == total_handled:
-                    final_audit_msg += "\n✅ *Status:* Integrity Reached (100% Synced successfully)."
+                        logging.warning(f"⚠️ 'Energy' click failed to load next page (Trial {trial + 1}/3). Retrying click...")
                 else:
-                    final_audit_msg += f"\n⚠️ *Status:* Discrepancy detected. {total_expected - total_handled} records missing."
-                
-                send_telegram_message(final_audit_msg)
+                    logging.warning("⚠️ 'Energy' department row not found. May have 0 pending complaints.")
+                    break
 
-                # Request to loop dynamically
-                resp = wait_for_telegram_reply_or_file("✅ Data collection for this ID complete. Loop another ID? (y/n):")
-                cont = resp['text'].lower() if resp['type'] == 'text' else 'n'
+            if not dept_clicked:
+                logging.warning("⚠️ Failed to verify Department click. Reloading Soft Loop...")
+                continue 
+
+            # 2. District Selection
+            dist_clicked = False
+            for trial in range(3):
+                if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDistrictWise", timeout=10): 
+                    break
                 
-                if cont in ['y', 'yes']:
-                    user_resp = wait_for_telegram_reply_or_file("🔄 Please send the NEW User ID:")
-                    current_user = user_resp['text'] if user_resp['type'] == 'text' else SAHYOG_USER
-                    pass_resp = wait_for_telegram_reply_or_file("🔑 Please send the NEW Password:")
-                    current_pass = pass_resp['text'] if pass_resp['type'] == 'text' else SAHYOG_PASS
-                    block_status = {}
-                    driver.get("https://sahyog.bihar.gov.in/Sahyog/LoginAdm.aspx")
-                    time.sleep(2)
+                dist_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvDistrictWise")
+                found = False
+                for row in dist_table.find_elements(By.TAG_NAME, "tr")[1:-1]:
+                    cols = row.find_elements(By.TAG_NAME, "td")
+                    if len(cols) > 1 and CONFIG["target_district"].lower() in cols[1].text.lower():
+                        safe_click(driver, cols[1].find_element(By.TAG_NAME, "a"))
+                        time.sleep(1) 
+                        wait_for_ajax(driver)
+                        found = True
+                        break
+                        
+                if found:
+                    if wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock", timeout=5):
+                        dist_clicked = True
+                        break
+                    else:
+                        logging.warning(f"⚠️ District click failed to load next page (Trial {trial + 1}/3). Retrying click...")
                 else:
-                    break 
-                
-            except (InvalidSessionIdException, WebDriverException) as fatal_e:
-                logging.critical(f" [FATAL FAIL] Browser Connection Lost. Hard Recovery Restarting... Error: {fatal_e}")
-                time.sleep(5)
+                    logging.warning("⚠️ Target District row not found.")
+                    break
+            
+            if not dist_clicked:
+                logging.warning("⚠️ Failed to verify District click. Reloading Soft Loop...")
                 continue
 
-        # ==========================================
-        # 7. EXECUTIVE POST-PROCESSING
-        # ==========================================
-        if master_data:
-            run_post_processing(master_data, target_output_dir, timestamp, generated_pdfs)
+            # Block Count
+            if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock"): continue
+            try:
+                block_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvBlock']//tr")) - 2
+            except Exception:
+                logging.warning("⚠️ Failed to count block rows. Retrying Soft Loop...")
+                continue
+
+            block_loop_crashed = False
+
+            # Block Loop
+            for i in range(1, block_rows_count + 1):
+                driver.switch_to.window(main_tab)
+                
+                try:
+                    row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvBlock']//tr")[i]
+                    cols = row.find_elements(By.TAG_NAME, "td")
+                    block_name = cols[1].text.strip()
+                    pending_count = int(cols[3].text.strip()) if cols[3].text.strip().isdigit() else 0
+                except IndexError:
+                    logging.warning(f"⚠️ Server sent a broken Block List page (Missing row index {i}). Triggering Soft Recovery...")
+                    block_loop_crashed = True
+                    break
+                except Exception as e:
+                    logging.warning(f"⚠️ Unexpected error parsing Block List row {i}: {e}. Triggering Soft Recovery...")
+                    block_loop_crashed = True
+                    break
+                
+                if block_name not in block_status:
+                    block_status[block_name] = {'expected': pending_count, 'success': False, 'handled': 0}
+                else:
+                    block_status[block_name]['expected'] = pending_count 
+                
+                if pending_count == 0 or block_status[block_name]['success']:
+                    logging.debug(f"Skipping {block_name} - Already Complete or 0 Pending.")
+                    continue
+                    
+                block_start_msg = f"📍 [BLOCK START] Entering {block_name} (Expected: {pending_count})"
+                logging.info(block_start_msg)
+                send_telegram_message(block_start_msg)
+                
+                safe_click(driver, cols[3].find_element(By.TAG_NAME, "a"))
+                time.sleep(1) 
+                wait_for_ajax(driver)
+                
+                if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvDetails"):
+                    block_loop_crashed = True
+                    break
+
+                detail_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]"))
+                handled_this_block = 0
+                
+                # Detail Grid Loop
+                for row_idx in range(detail_rows_count):
+                    driver.switch_to.window(main_tab)
+                    check_session(driver, SAHYOG_USER, SAHYOG_PASS)
+                    verify_page_state(driver)
+                    try:
+                        d_row = driver.find_elements(By.XPATH, "//table[@id='ctl00_ContentPlaceHolder1_gvDetails']//tr[position()>1]")[row_idx]
+                        d_cols = d_row.find_elements(By.TAG_NAME, "td")
+                        if len(d_cols) < 23: continue
+                        
+                        ack_no = d_cols[1].text.strip()
+                        
+                        g_block = d_cols[14].text.strip()
+                        g_panch = d_cols[15].text.strip()
+                        subdiv, section = get_subdivision_section(g_block, g_panch)
+
+                        row_data = {
+                            "S.No.": d_cols[0].text, "Registration No.": ack_no, "Application Type": d_cols[2].text,
+                            "Applicant Name": d_cols[3].text, "Mobile No": d_cols[4].text, "Department Name": d_cols[5].text,
+                            "Complaint Status": d_cols[6].text, "Applicant District": d_cols[7].text, "Applicant Block": d_cols[8].text,
+                            "Applicant Panchayat": d_cols[9].text, "Applicant Police Station": d_cols[10].text, 
+                            "Grievance Division": d_cols[11].text, "Grievance District": d_cols[12].text, 
+                            "Grievance Sub Division": d_cols[13].text, "Grievance Block": g_block, 
+                            "Grievance Panchayat": g_panch, "Grievance Police Station": d_cols[16].text, 
+                            "Grievance Type": d_cols[17].text, "Designation": d_cols[18].text, "Designation Level": d_cols[19].text,
+                            "Delegated Status": d_cols[20].text, "Pending Duration (Level 1)": d_cols[21].text, 
+                            "Delegation Duration (Days)": d_cols[22].text,
+                            "Subdivision": subdiv, "Section": section
+                        }
+                        
+                        # IN-FLIGHT SMART MERGE
+                        if ack_no in extracted_ack_set:
+                            old_row = None
+                            if not previous_df.empty:
+                                ref_col = "Registration No." if "Registration No." in previous_df.columns else "Ack No"
+                                match = previous_df[previous_df[ref_col].astype(str).str.strip() == ack_no]
+                                if not match.empty:
+                                    old_row = match.iloc[0].to_dict()
+                            
+                            if old_row:
+                                merged_data = row_data.copy()
+                                deep_keys = ["Registration Date", "Father's Name", "Email", "Full Address", "Pincode", 
+                                             "Grievance Description", "Delegated To Officer", "Delegated Action Status",
+                                             "Delegated Action Date", "Delegated Remarks", "History Officer Details",
+                                             "History Action Date", "History Feedback", "History Remarks"]
+                                for key in deep_keys:
+                                    merged_data[key] = clean_for_excel(old_row.get(key, "N/A"))
+                                
+                                merged_data["Last Updated Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                master_data.append(merged_data)
+                                handled_this_block += 1
+                                continue 
+                        
+                        ack_url = d_cols[1].find_element(By.TAG_NAME, "a").get_attribute("href")
+                        driver.execute_script(f"window.open('{ack_url}', '_blank');")
+                        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) >= 3)
+                        detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
+                        driver.switch_to.window(detail_tab)
+                        
+                        desc, del_off, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
+                        hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
+                        app_date, father_name, email, full_address, pincode = "N/A", "N/A", "N/A", "N/A", "N/A"
+                        has_sec_pdf = False
+                        
+                        temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
+                        temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
+
+                        try:
+                            wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvpreview", 5)
+                            preview_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_gvpreview")
+                            data_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
+                            tds = data_row.find_elements(By.TAG_NAME, "td")
+                            
+                            applicant_dict = parse_cell_data(tds[1].text)
+                            father_name = applicant_dict.get("Father/Husband Name", "N/A")
+                            
+                            address_dict = parse_cell_data(tds[2].text)
+                            full_address = address_dict.get("Address", "N/A")
+                            pincode = address_dict.get("PinCode", "N/A")
+                            
+                            app_dict = parse_cell_data(tds[3].text)
+                            app_date = app_dict.get("Date", "N/A")
+                            
+                            desc = tds[5].text.strip()
+                        except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
+
+                        try:
+                            del_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_grdDelegate")
+                            del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[2]").text.strip()
+                            del_stat = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
+                            del_date = del_table.find_element(By.XPATH, ".//tr[2]/td[4]").text.strip()
+                            del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[5]").text.strip()
+                        except: pass
+
+                        try:
+                            hist_table = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_Gvforwarding")
+                            hist_row = hist_table.find_element(By.XPATH, ".//tbody/tr[1]")
+                            hist_off = hist_row.find_element(By.XPATH, "./td[2]").text.strip()
+                            hist_date = hist_row.find_element(By.XPATH, "./td[3]").text.strip()
+                            hist_feed = hist_row.find_element(By.XPATH, "./td[4]").text.strip()
+                            hist_rem = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
+                        except: pass
+
+                        row_data.update({
+                            "Father's Name": father_name, "Email": email, "Full Address": full_address, "Pincode": pincode,
+                            "Registration Date": app_date, "Grievance Description": desc, 
+                            "Delegated To Officer": del_off, "Delegated Action Status": del_stat,
+                            "Delegated Action Date": del_date, "Delegated Remarks": del_rem, 
+                            "History Officer Details": hist_off, "History Action Date": hist_date, 
+                            "History Feedback": hist_feed, "History Remarks": hist_rem,
+                            "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        for k in row_data: row_data[k] = clean_for_excel(row_data[k])
+
+                        logging.info(f" 🖨️  Generating Executive Blue PDF for {ack_no}...")
+                        generate_replica_pdf(driver, print_tab, detail_tab, row_data, temp_pdf1)
+
+                        logging.info(f" 📎 Fetching Attached Document for {ack_no}...")
+                        try:
+                            match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
+                            
+                            if not match:
+                                pdf_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'IDoc.aspx')]")
+                                if pdf_links:
+                                    safe_click(driver, pdf_links[0])
+                                    WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 3)
+                                    attach_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab, detail_tab]][0]
+                                    driver.switch_to.window(attach_tab)
+                                    WebDriverWait(driver, 15).until(lambda d: "JVBER" in d.page_source)
+                                    match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
+                                    
+                            if match:
+                                pdf_bytes = base64.b64decode(match.group(1).replace('\n', '').replace('\r', '').replace(' ', ''))
+                                if pdf_bytes.startswith(b'%PDF'):
+                                    with open(temp_pdf2, "wb") as f: f.write(pdf_bytes)
+                                    has_sec_pdf = True
+                                    
+                        except Exception as e: 
+                            logging.error(f"Failed to extract attached PDF for {ack_no}: {e}")
+                        finally:
+                            close_extra_tabs(driver, [main_tab, print_tab, detail_tab])
+                            driver.switch_to.window(detail_tab)
+
+                        base_filename = f"{sanitize_filename(ack_no)}_{sanitize_filename(row_data['Applicant Name'])}_{sanitize_filename(row_data['Applicant Block'])}"
+                        final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
+
+                        merger = PdfWriter()
+                        if os.path.exists(temp_pdf1) and is_valid_pdf(temp_pdf1): merger.append(temp_pdf1)
+                        if has_sec_pdf and is_valid_pdf(temp_pdf2): merger.append(temp_pdf2)
+                        if os.path.exists(temp_pdf1) or has_sec_pdf: merger.write(final_pdf)
+                        merger.close()
+
+                        if os.path.exists(temp_pdf1): os.remove(temp_pdf1)
+                        if os.path.exists(temp_pdf2): os.remove(temp_pdf2)
+
+                        master_data.append(row_data)
+                        extracted_ack_set.add(ack_no)
+                        handled_this_block += 1
+                        generated_pdfs.append(final_pdf)
+
+                        if len(master_data) % CONFIG["excel_save_batch_size"] == 0:
+                            save_safe_df(master_data, f"Sahyog_Data_TMP_{timestamp}.xlsx", target_output_dir)
+
+                    except Exception as row_e:
+                        logging.error(f"Failed to process row {ack_no}: {row_e}")
+                    finally:
+                        close_extra_tabs(driver, [main_tab, print_tab])
+                        driver.switch_to.window(main_tab)
+                
+                block_status[block_name]['handled'] = handled_this_block
+                if handled_this_block >= pending_count:
+                    block_status[block_name]['success'] = True
+                    block_end_msg = f" ✅ Block {block_name} 100% Complete."
+                    logging.info(block_end_msg)
+                    send_telegram_message(block_end_msg)
+                else:
+                    logging.warning(f" ⚠️ Block {block_name} incomplete. Scheduled for Soft Recovery.")
+
+                safe_click(driver, driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnClose"))
+                time.sleep(1) 
+                wait_for_ajax(driver)
+                if not wait_for_table(driver, "ctl00_ContentPlaceHolder1_gvBlock", timeout=15):
+                    logging.warning("⚠️ Failed to load Block List after backtracking. Triggering Soft Recovery...")
+                    block_loop_crashed = True
+                    break
+
+            if block_loop_crashed:
+                pass
+
+            # --- SOFT LOOP AUDIT & PROTECTION LOCK ---
+            all_success = True
+            total_expected, total_handled = 0, 0
             
-        logging.info(f"Process Complete. Detailed logs saved to: {log_filename}")
-        send_telegram_document(log_filename)
+            for b, st in block_status.items():
+                total_expected += st['expected']
+                total_handled += st.get('handled', 0)
+                if st['expected'] > 0 and not st['success']: all_success = False
 
-    # 🌍 GLOBAL ERROR HANDLER 🌍
-    except Exception as e:
-        error_msg = f"💥 CRITICAL BOT FAILURE:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()[-1000:]}"
-        logging.critical(error_msg)
-        try:
-            send_telegram_message(error_msg)
-        except:
-            pass 
+            audit_str = "\n".join([f"{block.ljust(15)} | Exp: {stats['expected']} | Ext: {stats.get('handled', 0)} | {'✅' if stats.get('success') else '❌'}" for block, stats in block_status.items() if stats['expected'] > 0])
+            
+            logging.info("\n" + "="*80)
+            logging.info("                      CYCLE AUDIT REPORT")
+            logging.info("="*80)
+            logging.info("\n" + audit_str)
+            
+            if all_success:
+                success_msg = f"✅ 100% INTEGRITY REACHED ({total_handled}/{total_expected}). BREAKING SOFT LOOP."
+                logging.info(success_msg)
+                send_telegram_message(success_msg)
+                break 
+            else:
+                recovery_attempts += 1
+                missing = total_expected - total_handled
+                
+                # Hard Cap protection to stop infinite loop crashes
+                if recovery_attempts >= MAX_RECOVERY_ATTEMPTS:
+                    fail_msg = f"🚨 INFINITE LOOP TRIGGERED: Recovery failed {MAX_RECOVERY_ATTEMPTS} times due to portal lag. Force breaking to protect server. Handing over saved partial dataset ({total_handled}/{total_expected})."
+                    logging.critical(fail_msg)
+                    send_telegram_message(fail_msg)
+                    break
+                    
+                fail_msg = f"⚠️ AUDIT FAILED (Attempt {recovery_attempts}/{MAX_RECOVERY_ATTEMPTS}): Expected {total_expected}, but only handled {total_handled}. Missing {missing}.\n🔄 Executing SMART SOFT-RECOVERY..."
+                logging.warning(fail_msg)
+                send_telegram_message(fail_msg)
+                time.sleep(3)
+                continue 
+        
+        # End loop directly - Clean Single-pass run execution
+        break
 
-    finally:
-        try: driver.quit()
-        except: pass
-        toggle_webhook(True)
+    # --- FINAL DATA AUDIT BROADCAST ---
+    final_audit_msg = (
+        f"📊 *Final Sahyog Sync Audit Report*\n\n"
+        f"📅 Date: {datetime.now().strftime('%d-%m-%Y')}\n"
+        f"🎯 Target District: {CONFIG['target_district']}\n\n"
+        f"📥 *Records Summary:*\n"
+        f"  • Total Expected: {total_expected}\n"
+        f"  • Total Downloaded: {total_handled}\n"
+    )
+    if total_expected == total_handled:
+        final_audit_msg += "\n✅ *Status:* 100% Synced successfully."
+    else:
+        final_audit_msg += f"\n⚠️ *Status:* Partial Run. {total_expected - total_handled} records missed due to server lag."
+    
+    send_telegram_message(final_audit_msg)
+
+    # ==========================================
+    # 7. EXECUTIVE POST-PROCESSING
+    # ==========================================
+    if master_data:
+        run_post_processing(master_data, target_output_dir, timestamp, generated_pdfs)
+        
+    logging.info(f"Process Complete. Detailed logs saved to: {log_filename}")
+    send_telegram_document(log_filename)
+
+# 🌍 GLOBAL GROUP EXCEPTION INTERCEPTOR 🌍
+except Exception as e:
+    error_msg = f"💥 CRITICAL BOT FAILURE IN PRODUCTION:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()[-1000:]}"
+    logging.critical(error_msg)
+    try: send_telegram_message(error_msg)
+    except: pass
+
+finally:
+    try: driver.quit()
+    except: pass
+    toggle_webhook(True)
 
 if __name__ == "__main__":
     main()
