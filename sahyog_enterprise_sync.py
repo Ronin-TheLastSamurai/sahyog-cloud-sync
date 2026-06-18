@@ -216,9 +216,15 @@ def send_telegram_document(file_path):
         with open(file_path, 'rb') as file_data:
             payload = {'chat_id': CHAT_ID}
             files = {'document': file_data}
-            requests.post(url, data=payload, files=files, timeout=120, verify=False) 
-            logging.info(f"📤 Uploaded {os.path.basename(file_path)} to Telegram.")
-    except Exception as e: logging.error(f"Failed to send file: {e}")
+            response = requests.post(url, data=payload, files=files, timeout=120, verify=False)
+            
+            # DIAGNOSTIC PATCH: Wait for API receipt to catch 50MB limits
+            if response.status_code == 200:
+                logging.info(f"📤 Uploaded {os.path.basename(file_path)} to Telegram successfully.")
+            else:
+                logging.error(f"❌ Telegram API Rejected {os.path.basename(file_path)}. Error {response.status_code}: {response.text}")
+    except Exception as e: 
+        logging.error(f"Failed to send file: {e}")
 
 def get_telegram_file(file_id):
     file_info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}", verify=False).json()
@@ -610,12 +616,13 @@ def main():
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.14 - GROUP CHAT PRODUCTION & LOOP PROTECTION ACTIVE")
+        logging.info("   SAHYOG V4.15 - PAGINATION SUB-LOOP & SESSION CACHE ACTIVE")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
         send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
 
-        extracted_ack_set = set()
+        extracted_ack_set = set()      # For Historical Smart Merge
+        session_scraped_acks = set()   # For Live Duplicate Avoidance
         previous_df = pd.DataFrame()
         
         # HISTORICAL SOFT SYNC (TELEGRAM GROUP CHAT FEATURE)
@@ -663,7 +670,7 @@ def main():
             try:
                 main_tab = driver.current_window_handle
                 
-                # Execute Login Once (No dynamic prompts)
+                # Execute Login Once
                 perform_login(driver, SAHYOG_USER, SAHYOG_PASS)
 
                 driver.execute_script("window.open('about:blank', 'print_tab');")
@@ -682,7 +689,7 @@ def main():
                     wait_for_ajax(driver)
                     time.sleep(3) 
 
-                    # 1. Department Selection (IDs updated)
+                    # 1. Department Selection
                     dept_clicked = False
                     for trial in range(3):
                         if not wait_for_table(driver, "ContentPlaceHolder1_gvDepartmentReport", timeout=10): 
@@ -713,7 +720,7 @@ def main():
                         logging.warning("⚠️ Failed to verify Department click. Reloading Soft Loop...")
                         continue 
 
-                    # 2. District Selection (IDs updated)
+                    # 2. District Selection
                     dist_clicked = False
                     for trial in range(3):
                         if not wait_for_table(driver, "ContentPlaceHolder1_gvDistrictWise", timeout=10): 
@@ -744,7 +751,7 @@ def main():
                         logging.warning("⚠️ Failed to verify District click. Reloading Soft Loop...")
                         continue
 
-                    # Block Count (IDs updated)
+                    # Block Count
                     if not wait_for_table(driver, "ContentPlaceHolder1_gvBlock"): continue
                     try:
                         block_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvBlock']//tr")) - 2
@@ -789,182 +796,214 @@ def main():
                         time.sleep(1) 
                         wait_for_ajax(driver)
                         
-                        if not wait_for_table(driver, "ContentPlaceHolder1_gvDetails"):
-                            block_loop_crashed = True
-                            break
-
-                        detail_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1]"))
+                        # ================= THE PAGINATION SUB-LOOP =================
                         handled_this_block = 0
+                        pagination_active = True
                         
-                        # Detail Grid Loop
-                        for row_idx in range(detail_rows_count):
-                            driver.switch_to.window(main_tab)
-                            check_session(driver, SAHYOG_USER, SAHYOG_PASS)
-                            verify_page_state(driver)
-                            try:
-                                d_row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1]")[row_idx]
-                                d_cols = d_row.find_elements(By.TAG_NAME, "td")
-                                if len(d_cols) < 23: continue
+                        while pagination_active:
+                            if not wait_for_table(driver, "ContentPlaceHolder1_gvDetails"):
+                                block_loop_crashed = True
+                                break
                                 
-                                ack_no = d_cols[1].text.strip()
-                                
-                                g_block = d_cols[14].text.strip()
-                                g_panch = d_cols[15].text.strip()
-                                subdiv, section = get_subdivision_section(g_block, g_panch)
-
-                                row_data = {
-                                    "S.No.": d_cols[0].text, "Registration No.": ack_no, "Application Type": d_cols[2].text,
-                                    "Applicant Name": d_cols[3].text, "Mobile No": d_cols[4].text, "Department Name": d_cols[5].text,
-                                    "Complaint Status": d_cols[6].text, "Applicant District": d_cols[7].text, "Applicant Block": d_cols[8].text,
-                                    "Applicant Panchayat": d_cols[9].text, "Applicant Police Station": d_cols[10].text, 
-                                    "Grievance Division": d_cols[11].text, "Grievance District": d_cols[12].text, 
-                                    "Grievance Sub Division": d_cols[13].text, "Grievance Block": g_block, 
-                                    "Grievance Panchayat": g_panch, "Grievance Police Station": d_cols[16].text, 
-                                    "Grievance Type": d_cols[17].text, "Designation": d_cols[18].text, "Designation Level": d_cols[19].text,
-                                    "Delegated Status": d_cols[20].text, "Pending Duration (Level 1)": d_cols[21].text, 
-                                    "Delegation Duration (Days)": d_cols[22].text,
-                                    "Subdivision": subdiv, "Section": section
-                                }
-                                
-                                # IN-FLIGHT SMART MERGE
-                                if ack_no in extracted_ack_set:
-                                    old_row = None
-                                    if not previous_df.empty:
-                                        ref_col = "Registration No." if "Registration No." in previous_df.columns else "Ack No"
-                                        match = previous_df[previous_df[ref_col].astype(str).str.strip() == ack_no]
-                                        if not match.empty:
-                                            old_row = match.iloc[0].to_dict()
-                                    
-                                    if old_row:
-                                        merged_data = row_data.copy()
-                                        deep_keys = ["Registration Date", "Father's Name", "Email", "Full Address", "Pincode", 
-                                                     "Grievance Description", "Delegated To Officer", "Delegated Action Status",
-                                                     "Delegated Action Date", "Delegated Remarks", "History Officer Details",
-                                                     "History Action Date", "History Feedback", "History Remarks"]
-                                        for key in deep_keys:
-                                            merged_data[key] = clean_for_excel(old_row.get(key, "N/A"))
-                                        
-                                        merged_data["Last Updated Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        master_data.append(merged_data)
-                                        handled_this_block += 1
-                                        continue 
-                                
-                                ack_url = d_cols[1].find_element(By.TAG_NAME, "a").get_attribute("href")
-                                driver.execute_script(f"window.open('{ack_url}', '_blank');")
-                                WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) >= 3)
-                                detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
-                                driver.switch_to.window(detail_tab)
-                                
-                                desc, del_off, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
-                                app_date, father_name, email, full_address, pincode = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                has_sec_pdf = False
-                                
-                                temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
-                                temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
-
-                                try:
-                                    wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
-                                    preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
-                                    data_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
-                                    tds = data_row.find_elements(By.TAG_NAME, "td")
-                                    
-                                    applicant_dict = parse_cell_data(tds[1].text)
-                                    father_name = applicant_dict.get("Father/Husband Name", "N/A")
-                                    
-                                    address_dict = parse_cell_data(tds[2].text)
-                                    full_address = address_dict.get("Address", "N/A")
-                                    pincode = address_dict.get("PinCode", "N/A")
-                                    
-                                    app_dict = parse_cell_data(tds[3].text)
-                                    app_date = app_dict.get("Date", "N/A")
-                                    
-                                    desc = tds[5].text.strip()
-                                except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
-
-                                try:
-                                    del_table = driver.find_element(By.ID, "ContentPlaceHolder1_grdDelegate")
-                                    del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[2]").text.strip()
-                                    del_stat = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
-                                    del_date = del_table.find_element(By.XPATH, ".//tr[2]/td[4]").text.strip()
-                                    del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[5]").text.strip()
-                                except: pass
-
-                                try:
-                                    hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
-                                    hist_row = hist_table.find_element(By.XPATH, ".//tbody/tr[1]")
-                                    hist_off = hist_row.find_element(By.XPATH, "./td[2]").text.strip()
-                                    hist_date = hist_row.find_element(By.XPATH, "./td[3]").text.strip()
-                                    hist_feed = hist_row.find_element(By.XPATH, "./td[4]").text.strip()
-                                    hist_rem = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
-                                except: pass
-
-                                row_data.update({
-                                    "Father's Name": father_name, "Email": email, "Full Address": full_address, "Pincode": pincode,
-                                    "Registration Date": app_date, "Grievance Description": desc, 
-                                    "Delegated To Officer": del_off, "Delegated Action Status": del_stat,
-                                    "Delegated Action Date": del_date, "Delegated Remarks": del_rem, 
-                                    "History Officer Details": hist_off, "History Action Date": hist_date, 
-                                    "History Feedback": hist_feed, "History Remarks": hist_rem,
-                                    "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                                for k in row_data: row_data[k] = clean_for_excel(row_data[k])
-
-                                logging.info(f" 🖨️  Generating Executive Blue PDF for {ack_no}...")
-                                generate_replica_pdf(driver, print_tab, detail_tab, row_data, temp_pdf1)
-
-                                logging.info(f" 📎 Fetching Attached Document for {ack_no}...")
-                                try:
-                                    match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
-                                    
-                                    if not match:
-                                        pdf_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'IDoc.aspx')]")
-                                        if pdf_links:
-                                            safe_click(driver, pdf_links[0])
-                                            WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 3)
-                                            attach_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab, detail_tab]][0]
-                                            driver.switch_to.window(attach_tab)
-                                            WebDriverWait(driver, 15).until(lambda d: "JVBER" in d.page_source)
-                                            match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
-                                            
-                                    if match:
-                                        pdf_bytes = base64.b64decode(match.group(1).replace('\n', '').replace('\r', '').replace(' ', ''))
-                                        if pdf_bytes.startswith(b'%PDF'):
-                                            with open(temp_pdf2, "wb") as f: f.write(pdf_bytes)
-                                            has_sec_pdf = True
-                                            
-                                except Exception as e: 
-                                    logging.error(f"Failed to extract attached PDF for {ack_no}: {e}")
-                                finally:
-                                    close_extra_tabs(driver, [main_tab, print_tab, detail_tab])
-                                    driver.switch_to.window(detail_tab)
-
-                                base_filename = f"{sanitize_filename(ack_no)}_{sanitize_filename(row_data['Applicant Name'])}_{sanitize_filename(row_data['Applicant Block'])}"
-                                final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
-
-                                merger = PdfWriter()
-                                if os.path.exists(temp_pdf1) and is_valid_pdf(temp_pdf1): merger.append(temp_pdf1)
-                                if has_sec_pdf and is_valid_pdf(temp_pdf2): merger.append(temp_pdf2)
-                                if os.path.exists(temp_pdf1) or has_sec_pdf: merger.write(final_pdf)
-                                merger.close()
-
-                                if os.path.exists(temp_pdf1): os.remove(temp_pdf1)
-                                if os.path.exists(temp_pdf2): os.remove(temp_pdf2)
-
-                                master_data.append(row_data)
-                                extracted_ack_set.add(ack_no)
-                                handled_this_block += 1
-                                generated_pdfs.append(final_pdf)
-
-                                if len(master_data) % CONFIG["excel_save_batch_size"] == 0:
-                                    save_safe_df(master_data, f"Sahyog_Data_TMP_{timestamp}.xlsx", target_output_dir)
-
-                            except Exception as row_e:
-                                logging.error(f"Failed to process row {ack_no}: {row_e}")
-                            finally:
-                                close_extra_tabs(driver, [main_tab, print_tab])
+                            # Scrape actual rows, explicitly ignoring the pagination row at the bottom
+                            detail_rows = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")
+                            detail_rows_count = len(detail_rows)
+                            
+                            # Detail Grid Row Loop
+                            for row_idx in range(detail_rows_count):
                                 driver.switch_to.window(main_tab)
-                        
+                                check_session(driver, SAHYOG_USER, SAHYOG_PASS)
+                                verify_page_state(driver)
+                                try:
+                                    # Must re-find element dynamically in case DOM refreshed
+                                    d_row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")[row_idx]
+                                    d_cols = d_row.find_elements(By.TAG_NAME, "td")
+                                    if len(d_cols) < 23: continue
+                                    
+                                    ack_no = d_cols[1].text.strip()
+                                    
+                                    # SESSION CACHE SHIELD: Prevents duplicate ZIP crashes during recovery
+                                    if ack_no in session_scraped_acks:
+                                        handled_this_block += 1
+                                        continue
+                                    
+                                    g_block = d_cols[14].text.strip()
+                                    g_panch = d_cols[15].text.strip()
+                                    subdiv, section = get_subdivision_section(g_block, g_panch)
+
+                                    row_data = {
+                                        "S.No.": d_cols[0].text, "Registration No.": ack_no, "Application Type": d_cols[2].text,
+                                        "Applicant Name": d_cols[3].text, "Mobile No": d_cols[4].text, "Department Name": d_cols[5].text,
+                                        "Complaint Status": d_cols[6].text, "Applicant District": d_cols[7].text, "Applicant Block": d_cols[8].text,
+                                        "Applicant Panchayat": d_cols[9].text, "Applicant Police Station": d_cols[10].text, 
+                                        "Grievance Division": d_cols[11].text, "Grievance District": d_cols[12].text, 
+                                        "Grievance Sub Division": d_cols[13].text, "Grievance Block": g_block, 
+                                        "Grievance Panchayat": g_panch, "Grievance Police Station": d_cols[16].text, 
+                                        "Grievance Type": d_cols[17].text, "Designation": d_cols[18].text, "Designation Level": d_cols[19].text,
+                                        "Delegated Status": d_cols[20].text, "Pending Duration (Level 1)": d_cols[21].text, 
+                                        "Delegation Duration (Days)": d_cols[22].text,
+                                        "Subdivision": subdiv, "Section": section
+                                    }
+                                    
+                                    # IN-FLIGHT HISTORICAL SMART MERGE
+                                    if ack_no in extracted_ack_set:
+                                        old_row = None
+                                        if not previous_df.empty:
+                                            ref_col = "Registration No." if "Registration No." in previous_df.columns else "Ack No"
+                                            match = previous_df[previous_df[ref_col].astype(str).str.strip() == ack_no]
+                                            if not match.empty:
+                                                old_row = match.iloc[0].to_dict()
+                                        
+                                        if old_row:
+                                            merged_data = row_data.copy()
+                                            deep_keys = ["Registration Date", "Father's Name", "Email", "Full Address", "Pincode", 
+                                                         "Grievance Description", "Delegated To Officer", "Delegated Action Status",
+                                                         "Delegated Action Date", "Delegated Remarks", "History Officer Details",
+                                                         "History Action Date", "History Feedback", "History Remarks"]
+                                            for key in deep_keys:
+                                                merged_data[key] = clean_for_excel(old_row.get(key, "N/A"))
+                                            
+                                            merged_data["Last Updated Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                            master_data.append(merged_data)
+                                            session_scraped_acks.add(ack_no)
+                                            handled_this_block += 1
+                                            continue 
+                                    
+                                    ack_url = d_cols[1].find_element(By.TAG_NAME, "a").get_attribute("href")
+                                    driver.execute_script(f"window.open('{ack_url}', '_blank');")
+                                    WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) >= 3)
+                                    detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
+                                    driver.switch_to.window(detail_tab)
+                                    
+                                    desc, del_off, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
+                                    hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
+                                    app_date, father_name, email, full_address, pincode = "N/A", "N/A", "N/A", "N/A", "N/A"
+                                    has_sec_pdf = False
+                                    
+                                    temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
+                                    temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
+
+                                    try:
+                                        wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
+                                        preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
+                                        data_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
+                                        tds = data_row.find_elements(By.TAG_NAME, "td")
+                                        
+                                        applicant_dict = parse_cell_data(tds[1].text)
+                                        father_name = applicant_dict.get("Father/Husband Name", "N/A")
+                                        
+                                        address_dict = parse_cell_data(tds[2].text)
+                                        full_address = address_dict.get("Address", "N/A")
+                                        pincode = address_dict.get("PinCode", "N/A")
+                                        
+                                        app_dict = parse_cell_data(tds[3].text)
+                                        app_date = app_dict.get("Date", "N/A")
+                                        
+                                        desc = tds[5].text.strip()
+                                    except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
+
+                                    try:
+                                        del_table = driver.find_element(By.ID, "ContentPlaceHolder1_grdDelegate")
+                                        del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[2]").text.strip()
+                                        del_stat = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
+                                        del_date = del_table.find_element(By.XPATH, ".//tr[2]/td[4]").text.strip()
+                                        del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[5]").text.strip()
+                                    except: pass
+
+                                    try:
+                                        hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
+                                        hist_row = hist_table.find_element(By.XPATH, ".//tbody/tr[1]")
+                                        hist_off = hist_row.find_element(By.XPATH, "./td[2]").text.strip()
+                                        hist_date = hist_row.find_element(By.XPATH, "./td[3]").text.strip()
+                                        hist_feed = hist_row.find_element(By.XPATH, "./td[4]").text.strip()
+                                        hist_rem = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
+                                    except: pass
+
+                                    row_data.update({
+                                        "Father's Name": father_name, "Email": email, "Full Address": full_address, "Pincode": pincode,
+                                        "Registration Date": app_date, "Grievance Description": desc, 
+                                        "Delegated To Officer": del_off, "Delegated Action Status": del_stat,
+                                        "Delegated Action Date": del_date, "Delegated Remarks": del_rem, 
+                                        "History Officer Details": hist_off, "History Action Date": hist_date, 
+                                        "History Feedback": hist_feed, "History Remarks": hist_rem,
+                                        "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    })
+                                    for k in row_data: row_data[k] = clean_for_excel(row_data[k])
+
+                                    logging.info(f" 🖨️  Generating Executive Blue PDF for {ack_no}...")
+                                    generate_replica_pdf(driver, print_tab, detail_tab, row_data, temp_pdf1)
+
+                                    logging.info(f" 📎 Fetching Attached Document for {ack_no}...")
+                                    try:
+                                        match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
+                                        
+                                        if not match:
+                                            pdf_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'IDoc.aspx')]")
+                                            if pdf_links:
+                                                safe_click(driver, pdf_links[0])
+                                                WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 3)
+                                                attach_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab, detail_tab]][0]
+                                                driver.switch_to.window(attach_tab)
+                                                WebDriverWait(driver, 15).until(lambda d: "JVBER" in d.page_source)
+                                                match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
+                                                
+                                        if match:
+                                            pdf_bytes = base64.b64decode(match.group(1).replace('\n', '').replace('\r', '').replace(' ', ''))
+                                            if pdf_bytes.startswith(b'%PDF'):
+                                                with open(temp_pdf2, "wb") as f: f.write(pdf_bytes)
+                                                has_sec_pdf = True
+                                                
+                                    except Exception as e: 
+                                        logging.error(f"Failed to extract attached PDF for {ack_no}: {e}")
+                                    finally:
+                                        close_extra_tabs(driver, [main_tab, print_tab, detail_tab])
+                                        driver.switch_to.window(detail_tab)
+
+                                    base_filename = f"{sanitize_filename(ack_no)}_{sanitize_filename(row_data['Applicant Name'])}_{sanitize_filename(row_data['Applicant Block'])}"
+                                    final_pdf = os.path.join(target_output_dir, f"{base_filename}.pdf")
+
+                                    merger = PdfWriter()
+                                    if os.path.exists(temp_pdf1) and is_valid_pdf(temp_pdf1): merger.append(temp_pdf1)
+                                    if has_sec_pdf and is_valid_pdf(temp_pdf2): merger.append(temp_pdf2)
+                                    if os.path.exists(temp_pdf1) or has_sec_pdf: merger.write(final_pdf)
+                                    merger.close()
+
+                                    if os.path.exists(temp_pdf1): os.remove(temp_pdf1)
+                                    if os.path.exists(temp_pdf2): os.remove(temp_pdf2)
+
+                                    master_data.append(row_data)
+                                    session_scraped_acks.add(ack_no)
+                                    handled_this_block += 1
+                                    generated_pdfs.append(final_pdf)
+
+                                    if len(master_data) % CONFIG["excel_save_batch_size"] == 0:
+                                        save_safe_df(master_data, f"Sahyog_Data_TMP_{timestamp}.xlsx", target_output_dir)
+
+                                except Exception as row_e:
+                                    logging.error(f"Failed to process row {ack_no}: {row_e}")
+                                finally:
+                                    close_extra_tabs(driver, [main_tab, print_tab])
+                                    driver.switch_to.window(main_tab)
+                                    
+                            # Check for the Page$Next button
+                            if block_loop_crashed: break
+                            
+                            try:
+                                next_btn = driver.find_elements(By.XPATH, "//a[contains(@href, 'Page$Next')]")
+                                if next_btn:
+                                    logging.info(" ➡️ Pagination trigger found. Turning to next page...")
+                                    safe_click(driver, next_btn[0])
+                                    wait_for_ajax(driver)
+                                    time.sleep(2)
+                                else:
+                                    pagination_active = False # End of block pages reached
+                            except Exception as e:
+                                logging.debug(f"Pagination check ended: {e}")
+                                pagination_active = False
+
+                        if block_loop_crashed:
+                            continue # Restart Soft Loop
+                            
                         block_status[block_name]['handled'] = handled_this_block
                         if handled_this_block >= pending_count:
                             block_status[block_name]['success'] = True
