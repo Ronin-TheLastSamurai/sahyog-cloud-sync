@@ -160,7 +160,9 @@ PANCHAYAT_MAP = {
     ('Baniapur', 'MANOPALI'): ('BANIYAPUR', 'BANIYAPUR_II'), ('Baniapur', 'MARICHA'): ('BANIYAPUR', 'BANIYAPUR_II'),
     ('Baniapur', 'RAMDHNAW'): ('BANIYAPUR', 'BANIYAPUR_II'), ('Baniapur', 'SAHAJITPUR'): ('BANIYAPUR', 'BANIYAPUR_II'),
     ('Baniapur', 'SISAI'): ('BANIYAPUR', 'BANIYAPUR_II'), ('Baniapur', 'SURAUDHA'): ('BANIYAPUR', 'BANIYAPUR_II'),
-    ('Chapra', 'Chapra (Nagar Parishad)'): ('CHAPRA(URBAN)', 'CHAPRA(URBAN)')
+    ('Chapra', 'Chapra (Nagar Parishad)'): ('CHAPRA(URBAN)', 'CHAPRA(URBAN)'),
+    ('Manjhi', 'Manjhi Nagar Panchayat'): ('EKMA', 'MANJHI_NEW'),
+    ('Revelganj', 'Revelganj (NP)'): ('CHAPRA(RURAL)', 'RIVILGANJ')
 }
 
 FINAL_EXCEL_COLUMNS = [
@@ -218,7 +220,6 @@ def send_telegram_document(file_path):
             files = {'document': file_data}
             response = requests.post(url, data=payload, files=files, timeout=120, verify=False)
             
-            # DIAGNOSTIC PATCH: Wait for API receipt to catch 50MB limits
             if response.status_code == 200:
                 logging.info(f"📤 Uploaded {os.path.basename(file_path)} to Telegram successfully.")
             else:
@@ -616,7 +617,7 @@ def main():
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.15 - PAGINATION SUB-LOOP & SESSION CACHE ACTIVE")
+        logging.info("   SAHYOG V4.16 - INNER GRID RE-MAP & PDF AUTO-CORRECTION ACTIVE")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
         send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
@@ -805,24 +806,20 @@ def main():
                                 block_loop_crashed = True
                                 break
                                 
-                            # Scrape actual rows, explicitly ignoring the pagination row at the bottom
                             detail_rows = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")
                             detail_rows_count = len(detail_rows)
                             
-                            # Detail Grid Row Loop
                             for row_idx in range(detail_rows_count):
                                 driver.switch_to.window(main_tab)
                                 check_session(driver, SAHYOG_USER, SAHYOG_PASS)
                                 verify_page_state(driver)
                                 try:
-                                    # Must re-find element dynamically in case DOM refreshed
                                     d_row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")[row_idx]
                                     d_cols = d_row.find_elements(By.TAG_NAME, "td")
                                     if len(d_cols) < 23: continue
                                     
                                     ack_no = d_cols[1].text.strip()
                                     
-                                    # SESSION CACHE SHIELD: Prevents duplicate ZIP crashes during recovery
                                     if ack_no in session_scraped_acks:
                                         handled_this_block += 1
                                         continue
@@ -845,7 +842,6 @@ def main():
                                         "Subdivision": subdiv, "Section": section
                                     }
                                     
-                                    # IN-FLIGHT HISTORICAL SMART MERGE
                                     if ack_no in extracted_ack_set:
                                         old_row = None
                                         if not previous_df.empty:
@@ -883,6 +879,7 @@ def main():
                                     temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
                                     temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
 
+                                    # [PATCHED] TOP TABLE: gvpreview
                                     try:
                                         wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
                                         preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
@@ -902,21 +899,33 @@ def main():
                                         desc = tds[5].text.strip()
                                     except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
 
+                                    # [PATCHED] MIDDLE TABLE: gvappforwarded (Formerly grdDelegate)
                                     try:
-                                        del_table = driver.find_element(By.ID, "ContentPlaceHolder1_grdDelegate")
-                                        del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[2]").text.strip()
-                                        del_stat = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
-                                        del_date = del_table.find_element(By.XPATH, ".//tr[2]/td[4]").text.strip()
-                                        del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[5]").text.strip()
+                                        del_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvappforwarded")
+                                        
+                                        # Column 3 is Designation (Officer)
+                                        del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
+                                        
+                                        # Column 6 contains BOTH Status and Date. We must split it.
+                                        status_date_text = del_table.find_element(By.XPATH, ".//tr[2]/td[6]").text.strip()
+                                        sd_parts = [p.strip() for p in status_date_text.split('\n') if p.strip()]
+                                        del_stat = sd_parts[0] if len(sd_parts) > 0 else "N/A"
+                                        del_date = sd_parts[1] if len(sd_parts) > 1 else "N/A"
+                                        
+                                        # Column 7 is Remarks
+                                        del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[7]").text.strip()
                                     except: pass
 
+                                    # [PATCHED] BOTTOM TABLE: Gvforwarding (New Extra Columns)
                                     try:
                                         hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
-                                        hist_row = hist_table.find_element(By.XPATH, ".//tbody/tr[1]")
-                                        hist_off = hist_row.find_element(By.XPATH, "./td[2]").text.strip()
-                                        hist_date = hist_row.find_element(By.XPATH, "./td[3]").text.strip()
-                                        hist_feed = hist_row.find_element(By.XPATH, "./td[4]").text.strip()
-                                        hist_rem = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
+                                        hist_row = hist_table.find_element(By.XPATH, ".//tr[2]")
+                                        
+                                        # Adjusted indices based on new frontend build
+                                        hist_off = hist_row.find_element(By.XPATH, "./td[4]").text.strip().replace('\n', ' | ')
+                                        hist_feed = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
+                                        hist_date = hist_row.find_element(By.XPATH, "./td[6]").text.strip()
+                                        hist_rem = hist_row.find_element(By.XPATH, "./td[7]").text.strip()
                                     except: pass
 
                                     row_data.update({
@@ -985,7 +994,6 @@ def main():
                                     close_extra_tabs(driver, [main_tab, print_tab])
                                     driver.switch_to.window(main_tab)
                                     
-                            # Check for the Page$Next button
                             if block_loop_crashed: break
                             
                             try:
@@ -996,13 +1004,13 @@ def main():
                                     wait_for_ajax(driver)
                                     time.sleep(2)
                                 else:
-                                    pagination_active = False # End of block pages reached
+                                    pagination_active = False 
                             except Exception as e:
                                 logging.debug(f"Pagination check ended: {e}")
                                 pagination_active = False
 
                         if block_loop_crashed:
-                            continue # Restart Soft Loop
+                            continue 
                             
                         block_status[block_name]['handled'] = handled_this_block
                         if handled_this_block >= pending_count:
@@ -1049,7 +1057,6 @@ def main():
                         recovery_attempts += 1
                         missing = total_expected - total_handled
                         
-                        # Hard Cap protection to stop infinite loop crashes
                         if recovery_attempts >= MAX_RECOVERY_ATTEMPTS:
                             fail_msg = f"🚨 INFINITE LOOP TRIGGERED: Recovery failed {MAX_RECOVERY_ATTEMPTS} times due to portal lag. Force breaking to protect server. Handing over saved partial dataset ({total_handled}/{total_expected})."
                             logging.critical(fail_msg)
@@ -1062,13 +1069,11 @@ def main():
                         time.sleep(3)
                         continue 
                 
-                # Catch Browser Crashes
             except (InvalidSessionIdException, WebDriverException) as fatal_e:
                 logging.critical(f" [FATAL FAIL] Browser Connection Lost. Hard Recovery Restarting... Error: {fatal_e}")
                 time.sleep(5)
                 continue
                 
-            # End loop directly - Clean Single-pass run execution
             break
 
         # --- FINAL DATA AUDIT BROADCAST ---
@@ -1096,7 +1101,6 @@ def main():
         logging.info(f"Process Complete. Detailed logs saved to: {log_filename}")
         send_telegram_document(log_filename)
 
-    # 🌍 GLOBAL GROUP EXCEPTION INTERCEPTOR 🌍
     except Exception as e:
         error_msg = f"💥 CRITICAL BOT FAILURE IN PRODUCTION:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()[-1000:]}"
         logging.critical(error_msg)
