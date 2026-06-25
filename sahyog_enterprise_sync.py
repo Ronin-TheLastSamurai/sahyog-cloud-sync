@@ -371,6 +371,17 @@ def check_session(driver, current_user, current_pass):
         perform_login(driver, current_user, current_pass)
         return True
 
+def extract_info(text, start_marker, end_marker=None):
+    try:
+        if end_marker:
+            pattern = f"{re.escape(start_marker)}\\s*(.*?)(?:{re.escape(end_marker)}|$)"
+        else:
+            pattern = f"{re.escape(start_marker)}\\s*(.*)"
+        m = re.search(pattern, text, re.DOTALL)
+        return m.group(1).strip() if m else "N/A"
+    except: 
+        return "N/A"
+
 # ==========================================
 # AUTH & DYNAMIC LOGIN ENGINE
 # ==========================================
@@ -617,16 +628,15 @@ def main():
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.16 - INNER GRID RE-MAP & PDF AUTO-CORRECTION ACTIVE")
+        logging.info("   SAHYOG V4.17 - DYNAMIC REGEX MAPPER & PAGINATION SUB-LOOP ACTIVE")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
         send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
 
-        extracted_ack_set = set()      # For Historical Smart Merge
-        session_scraped_acks = set()   # For Live Duplicate Avoidance
+        extracted_ack_set = set()      
+        session_scraped_acks = set()   
         previous_df = pd.DataFrame()
         
-        # HISTORICAL SOFT SYNC (TELEGRAM GROUP CHAT FEATURE)
         msg = "Do you want to load a historical Excel file for Soft Sync? Send the .xlsx file now, or reply 'skip'."
         resp = wait_for_telegram_reply_or_file(msg)
         if resp['type'] == 'file' and resp['name'].endswith(('.xls', '.xlsx')):
@@ -652,7 +662,6 @@ def main():
         generated_pdfs = []
         block_status = {} 
 
-        # HEADLESS CHROME ARCHITECTURE WITH SSL BYPASS
         chrome_options = Options()
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
@@ -666,23 +675,19 @@ def main():
         driver = webdriver.Chrome(options=chrome_options)
         driver.set_page_load_timeout(45)
 
-        # ================= THE HARD LOOP =================
         while True:
             try:
                 main_tab = driver.current_window_handle
                 
-                # Execute Login Once
                 perform_login(driver, SAHYOG_USER, SAHYOG_PASS)
 
                 driver.execute_script("window.open('about:blank', 'print_tab');")
                 WebDriverWait(driver, 5).until(lambda d: len(d.window_handles) > 1)
                 print_tab = [h for h in driver.window_handles if h != main_tab][0]
 
-                # LOOP PROTECTION SAFETY ENGINE
                 recovery_attempts = 0
                 MAX_RECOVERY_ATTEMPTS = 5
 
-                # ================= THE SOFT RECOVERY LOOP =================
                 while True: 
                     logging.info("\n 🔄 Initiating Drilldown Routine...")
                     drilldown_url = "https://sahyog.bihar.gov.in/Sahyog/IGRS_InnerPage/Reports/DepartmentWiseConsolidatedReport.aspx"
@@ -752,7 +757,6 @@ def main():
                         logging.warning("⚠️ Failed to verify District click. Reloading Soft Loop...")
                         continue
 
-                    # Block Count
                     if not wait_for_table(driver, "ContentPlaceHolder1_gvBlock"): continue
                     try:
                         block_rows_count = len(driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvBlock']//tr")) - 2
@@ -797,7 +801,6 @@ def main():
                         time.sleep(1) 
                         wait_for_ajax(driver)
                         
-                        # ================= THE PAGINATION SUB-LOOP =================
                         handled_this_block = 0
                         pagination_active = True
                         
@@ -805,7 +808,13 @@ def main():
                             if not wait_for_table(driver, "ContentPlaceHolder1_gvDetails"):
                                 block_loop_crashed = True
                                 break
-                                
+                            
+                            # Fetch Dynamic Headers from Outer Grid
+                            headers = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//th")
+                            header_map = {h.text.strip(): i for i, h in enumerate(headers)}
+                            idx_pending = header_map.get("Pending Duration (Level 1)", -1)
+                            idx_sno = header_map.get("Sl No", -1)
+                            
                             detail_rows = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")
                             detail_rows_count = len(detail_rows)
                             
@@ -816,32 +825,125 @@ def main():
                                 try:
                                     d_row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")[row_idx]
                                     d_cols = d_row.find_elements(By.TAG_NAME, "td")
-                                    if len(d_cols) < 23: continue
                                     
-                                    ack_no = d_cols[1].text.strip()
+                                    ref_link = d_row.find_element(By.XPATH, ".//a[contains(text(), 'REF')]")
+                                    ack_no = ref_link.text.strip()
+                                    ack_url = ref_link.get_attribute("href")
                                     
                                     if ack_no in session_scraped_acks:
                                         handled_this_block += 1
                                         continue
                                     
-                                    g_block = d_cols[14].text.strip()
-                                    g_panch = d_cols[15].text.strip()
-                                    subdiv, section = get_subdivision_section(g_block, g_panch)
+                                    outer_sno = d_cols[idx_sno].text.strip() if idx_sno != -1 and len(d_cols) > idx_sno else "N/A"
+                                    pending_duration = d_cols[idx_pending].text.strip() if idx_pending != -1 and len(d_cols) > idx_pending else "0"
+
+                                    driver.execute_script(f"window.open('{ack_url}', '_blank');")
+                                    WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) >= 3)
+                                    detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
+                                    driver.switch_to.window(detail_tab)
+                                    
+                                    app_name, father_name, mobile, app_address = "N/A", "N/A", "N/A", "N/A"
+                                    app_dist, app_block, app_thana, app_panch, app_pin = "N/A", "N/A", "N/A", "N/A", "N/A"
+                                    app_type, reg_date, dept_name, griev_type = "N/A", "N/A", "Energy", "N/A"
+                                    griev_div, griev_dist, griev_subdiv, griev_block = "N/A", "N/A", "N/A", "N/A"
+                                    griev_panch, griev_thana, desc = "N/A", "N/A", "N/A"
+                                    
+                                    del_off, del_level, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
+                                    hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
+                                    has_sec_pdf = False
+                                    
+                                    temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
+                                    temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
+
+                                    # --- [PATCHED INNER GRID REGEX EXTRACTION] ---
+                                    try:
+                                        wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
+                                        preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
+                                        p_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
+                                        p_cols = p_row.find_elements(By.TAG_NAME, "td")
+                                        
+                                        if len(p_cols) >= 6:
+                                            col2_text = p_cols[1].text.replace('\n', ' ')
+                                            app_name = extract_info(col2_text, "Name:-", "Father/Husband Name:-")
+                                            if app_name == "N/A": app_name = extract_info(col2_text, "Name:-", "Father's Name:-")
+                                            father_name = extract_info(col2_text, "Father/Husband Name:-", "Mobile:-")
+                                            if father_name == "N/A": father_name = extract_info(col2_text, "Father's Name:-", "Mobile:-")
+                                            mobile = extract_info(col2_text, "Mobile:-")
+                                            
+                                            col3_text = p_cols[2].text.replace('\n', ' ')
+                                            app_address = extract_info(col3_text, "Address:-", "District:-")
+                                            app_dist = extract_info(col3_text, "District:-", "Block:-")
+                                            app_block = extract_info(col3_text, "Block:-", "Thana:-")
+                                            app_thana = extract_info(col3_text, "Thana:-", "Panchayat:-")
+                                            app_panch = extract_info(col3_text, "Panchayat:-", "PinCode:-")
+                                            app_pin = extract_info(col3_text, "PinCode:-")
+                                            
+                                            col4_text = p_cols[3].text.replace('\n', ' ')
+                                            app_type = extract_info(col4_text, "Application Type:-", "Registration no:-")
+                                            reg_date = extract_info(col4_text, "Date:-", "Department:-")
+                                            dept_name = extract_info(col4_text, "Department:-", "Grievance Type:-")
+                                            griev_type = extract_info(col4_text, "Grievance Type:-")
+                                            
+                                            col5_text = p_cols[4].text.replace('\n', ' ')
+                                            griev_div = extract_info(col5_text, "Division:-", "District:-")
+                                            griev_dist = extract_info(col5_text, "District:-", "Sub Division:-")
+                                            griev_subdiv = extract_info(col5_text, "Sub Division:-", "Block:-")
+                                            griev_block = extract_info(col5_text, "Block:-", "Panchayat:-")
+                                            griev_panch = extract_info(col5_text, "Panchayat:-", "Thana:-")
+                                            griev_thana = extract_info(col5_text, "Thana:-", "Pincode") 
+                                            griev_thana = griev_thana.rstrip(';-:').strip()
+                                            
+                                            desc = p_cols[5].text.strip()
+                                    except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
+
+                                    # --- [PATCHED DELEGATION EXTRACTION] ---
+                                    try:
+                                        del_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvappforwarded")
+                                        del_row = del_table.find_element(By.XPATH, ".//tr[2]")
+                                        d_cols_inner = del_row.find_elements(By.TAG_NAME, "td")
+                                        
+                                        if len(d_cols_inner) >= 7:
+                                            del_off = d_cols_inner[2].text.strip()
+                                            del_level_dept = d_cols_inner[3].text.replace('\n', ' ')
+                                            del_level = del_level_dept.split(' ')[0] if del_level_dept else "N/A"
+                                            
+                                            status_date_text = d_cols_inner[5].text.strip()
+                                            sd_parts = [p.strip() for p in status_date_text.split('\n') if p.strip()]
+                                            del_stat = sd_parts[0] if len(sd_parts) > 0 else "N/A"
+                                            del_date = sd_parts[1] if len(sd_parts) > 1 else "N/A"
+                                            
+                                            del_rem = d_cols_inner[6].text.strip()
+                                    except: pass
+
+                                    # --- [PATCHED HISTORY EXTRACTION] ---
+                                    try:
+                                        hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
+                                        hist_row = hist_table.find_element(By.XPATH, ".//tr[2]")
+                                        h_cols = hist_row.find_elements(By.TAG_NAME, "td")
+                                        
+                                        if len(h_cols) >= 7:
+                                            hist_off = h_cols[3].text.strip().replace('\n', ' | ')
+                                            hist_feed = h_cols[4].text.strip()
+                                            hist_date = h_cols[5].text.strip()
+                                            hist_rem = h_cols[6].text.strip()
+                                    except: pass
+
+                                    subdiv, section = get_subdivision_section(griev_block, griev_panch)
 
                                     row_data = {
-                                        "S.No.": d_cols[0].text, "Registration No.": ack_no, "Application Type": d_cols[2].text,
-                                        "Applicant Name": d_cols[3].text, "Mobile No": d_cols[4].text, "Department Name": d_cols[5].text,
-                                        "Complaint Status": d_cols[6].text, "Applicant District": d_cols[7].text, "Applicant Block": d_cols[8].text,
-                                        "Applicant Panchayat": d_cols[9].text, "Applicant Police Station": d_cols[10].text, 
-                                        "Grievance Division": d_cols[11].text, "Grievance District": d_cols[12].text, 
-                                        "Grievance Sub Division": d_cols[13].text, "Grievance Block": g_block, 
-                                        "Grievance Panchayat": g_panch, "Grievance Police Station": d_cols[16].text, 
-                                        "Grievance Type": d_cols[17].text, "Designation": d_cols[18].text, "Designation Level": d_cols[19].text,
-                                        "Delegated Status": d_cols[20].text, "Pending Duration (Level 1)": d_cols[21].text, 
-                                        "Delegation Duration (Days)": d_cols[22].text,
-                                        "Subdivision": subdiv, "Section": section
+                                        "S.No.": outer_sno, "Registration No.": ack_no, "Application Type": app_type,
+                                        "Applicant Name": app_name, "Mobile No": mobile, "Department Name": dept_name,
+                                        "Complaint Status": del_stat, "Applicant District": app_dist, "Applicant Block": app_block,
+                                        "Applicant Panchayat": app_panch, "Applicant Police Station": app_thana, "Pincode": app_pin, 
+                                        "Grievance Division": griev_div, "Grievance District": griev_dist, 
+                                        "Grievance Sub Division": griev_subdiv, "Grievance Block": griev_block, 
+                                        "Grievance Panchayat": griev_panch, "Grievance Police Station": griev_thana, 
+                                        "Grievance Type": griev_type, "Designation": del_off, "Designation Level": del_level,
+                                        "Delegated Status": "Yes" if del_off != "N/A" else "No", "Pending Duration (Level 1)": pending_duration, 
+                                        "Delegation Duration (Days)": "0", "Subdivision": subdiv, "Section": section
                                     }
                                     
+                                    # IN-FLIGHT SMART MERGE
                                     if ack_no in extracted_ack_set:
                                         old_row = None
                                         if not previous_df.empty:
@@ -852,10 +954,9 @@ def main():
                                         
                                         if old_row:
                                             merged_data = row_data.copy()
-                                            deep_keys = ["Registration Date", "Father's Name", "Email", "Full Address", "Pincode", 
-                                                         "Grievance Description", "Delegated To Officer", "Delegated Action Status",
-                                                         "Delegated Action Date", "Delegated Remarks", "History Officer Details",
-                                                         "History Action Date", "History Feedback", "History Remarks"]
+                                            deep_keys = ["Registration Date", "Father's Name", "Email", "Full Address", "Grievance Description", 
+                                                         "Delegated To Officer", "Delegated Action Status", "Delegated Action Date", "Delegated Remarks", 
+                                                         "History Officer Details", "History Action Date", "History Feedback", "History Remarks"]
                                             for key in deep_keys:
                                                 merged_data[key] = clean_for_excel(old_row.get(key, "N/A"))
                                             
@@ -863,74 +964,13 @@ def main():
                                             master_data.append(merged_data)
                                             session_scraped_acks.add(ack_no)
                                             handled_this_block += 1
+                                            close_extra_tabs(driver, [main_tab, print_tab])
+                                            driver.switch_to.window(main_tab)
                                             continue 
-                                    
-                                    ack_url = d_cols[1].find_element(By.TAG_NAME, "a").get_attribute("href")
-                                    driver.execute_script(f"window.open('{ack_url}', '_blank');")
-                                    WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) >= 3)
-                                    detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
-                                    driver.switch_to.window(detail_tab)
-                                    
-                                    desc, del_off, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                    hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
-                                    app_date, father_name, email, full_address, pincode = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                    has_sec_pdf = False
-                                    
-                                    temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
-                                    temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
-
-                                    # [PATCHED] TOP TABLE: gvpreview
-                                    try:
-                                        wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
-                                        preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
-                                        data_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
-                                        tds = data_row.find_elements(By.TAG_NAME, "td")
-                                        
-                                        applicant_dict = parse_cell_data(tds[1].text)
-                                        father_name = applicant_dict.get("Father/Husband Name", "N/A")
-                                        
-                                        address_dict = parse_cell_data(tds[2].text)
-                                        full_address = address_dict.get("Address", "N/A")
-                                        pincode = address_dict.get("PinCode", "N/A")
-                                        
-                                        app_dict = parse_cell_data(tds[3].text)
-                                        app_date = app_dict.get("Date", "N/A")
-                                        
-                                        desc = tds[5].text.strip()
-                                    except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
-
-                                    # [PATCHED] MIDDLE TABLE: gvappforwarded (Formerly grdDelegate)
-                                    try:
-                                        del_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvappforwarded")
-                                        
-                                        # Column 3 is Designation (Officer)
-                                        del_off = del_table.find_element(By.XPATH, ".//tr[2]/td[3]").text.strip()
-                                        
-                                        # Column 6 contains BOTH Status and Date. We must split it.
-                                        status_date_text = del_table.find_element(By.XPATH, ".//tr[2]/td[6]").text.strip()
-                                        sd_parts = [p.strip() for p in status_date_text.split('\n') if p.strip()]
-                                        del_stat = sd_parts[0] if len(sd_parts) > 0 else "N/A"
-                                        del_date = sd_parts[1] if len(sd_parts) > 1 else "N/A"
-                                        
-                                        # Column 7 is Remarks
-                                        del_rem = del_table.find_element(By.XPATH, ".//tr[2]/td[7]").text.strip()
-                                    except: pass
-
-                                    # [PATCHED] BOTTOM TABLE: Gvforwarding (New Extra Columns)
-                                    try:
-                                        hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
-                                        hist_row = hist_table.find_element(By.XPATH, ".//tr[2]")
-                                        
-                                        # Adjusted indices based on new frontend build
-                                        hist_off = hist_row.find_element(By.XPATH, "./td[4]").text.strip().replace('\n', ' | ')
-                                        hist_feed = hist_row.find_element(By.XPATH, "./td[5]").text.strip()
-                                        hist_date = hist_row.find_element(By.XPATH, "./td[6]").text.strip()
-                                        hist_rem = hist_row.find_element(By.XPATH, "./td[7]").text.strip()
-                                    except: pass
-
+                                            
                                     row_data.update({
-                                        "Father's Name": father_name, "Email": email, "Full Address": full_address, "Pincode": pincode,
-                                        "Registration Date": app_date, "Grievance Description": desc, 
+                                        "Father's Name": father_name, "Email": "N/A", "Full Address": app_address,
+                                        "Registration Date": reg_date, "Grievance Description": desc, 
                                         "Delegated To Officer": del_off, "Delegated Action Status": del_stat,
                                         "Delegated Action Date": del_date, "Delegated Remarks": del_rem, 
                                         "History Officer Details": hist_off, "History Action Date": hist_date, 
