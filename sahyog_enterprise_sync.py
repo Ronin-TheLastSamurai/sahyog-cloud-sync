@@ -194,7 +194,7 @@ def toggle_webhook(enable=True):
         logging.info("🔌 Webhook disabled. Python is now listening via polling.")
 
 # ==========================================
-# TELEGRAM COMMUNICATIONS (FLUSH QUEUE)
+# TELEGRAM COMMUNICATIONS
 # ==========================================
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -322,14 +322,6 @@ def close_extra_tabs(driver, keep_handles):
         else: driver.switch_to.window(keep_handles[-1])
     except: pass
 
-def parse_cell_data(text):
-    data = {}
-    for line in text.split('\n'):
-        if ':-' in line:
-            parts = line.split(':-', 1)
-            data[parts[0].strip()] = parts[1].strip()
-    return data
-
 def is_valid_pdf(filepath):
     if not os.path.exists(filepath): return False
     try:
@@ -370,17 +362,6 @@ def check_session(driver, current_user, current_pass):
         send_telegram_message(msg)
         perform_login(driver, current_user, current_pass)
         return True
-
-def extract_info(text, start_marker, end_marker=None):
-    try:
-        if end_marker:
-            pattern = f"{re.escape(start_marker)}\\s*(.*?)(?:{re.escape(end_marker)}|$)"
-        else:
-            pattern = f"{re.escape(start_marker)}\\s*(.*)"
-        m = re.search(pattern, text, re.DOTALL)
-        return m.group(1).strip() if m else "N/A"
-    except: 
-        return "N/A"
 
 # ==========================================
 # AUTH & DYNAMIC LOGIN ENGINE
@@ -628,7 +609,7 @@ def main():
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.17 - DYNAMIC REGEX MAPPER & PAGINATION SUB-LOOP ACTIVE")
+        logging.info("   SAHYOG V4.19 - FULL AUTONOMOUS GRID ROW EXTRACTOR")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
         send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
@@ -809,9 +790,8 @@ def main():
                                 block_loop_crashed = True
                                 break
                             
-                            # Fetch Dynamic Headers from Outer Grid
                             headers = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//th")
-                            header_map = {h.text.strip(): i for i, h in enumerate(headers)}
+                            header_map = {h.text.strip(): idx for idx, h in enumerate(headers)}
                             idx_pending = header_map.get("Pending Duration (Level 1)", -1)
                             idx_sno = header_map.get("Sl No", -1)
                             
@@ -834,7 +814,7 @@ def main():
                                         handled_this_block += 1
                                         continue
                                     
-                                    outer_sno = d_cols[idx_sno].text.strip() if idx_sno != -1 and len(d_cols) > idx_sno else "N/A"
+                                    outer_sno = d_cols[idx_sno].text.strip() if idx_sno != -1 and len(d_cols) > idx_sno else str(handled_this_block + 1)
                                     pending_duration = d_cols[idx_pending].text.strip() if idx_pending != -1 and len(d_cols) > idx_pending else "0"
 
                                     driver.execute_script(f"window.open('{ack_url}', '_blank');")
@@ -842,107 +822,187 @@ def main():
                                     detail_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab]][0]
                                     driver.switch_to.window(detail_tab)
                                     
-                                    app_name, father_name, mobile, app_address = "N/A", "N/A", "N/A", "N/A"
-                                    app_dist, app_block, app_thana, app_panch, app_pin = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                    app_type, reg_date, dept_name, griev_type = "N/A", "N/A", "Energy", "N/A"
-                                    griev_div, griev_dist, griev_subdiv, griev_block = "N/A", "N/A", "N/A", "N/A"
-                                    griev_panch, griev_thana, desc = "N/A", "N/A", "N/A"
-                                    
-                                    del_off, del_level, del_stat, del_date, del_rem = "N/A", "N/A", "N/A", "N/A", "N/A"
-                                    hist_off, hist_date, hist_feed, hist_rem = "N/A", "N/A", "N/A", "N/A"
-                                    has_sec_pdf = False
-                                    
                                     temp_pdf1 = os.path.join(target_output_dir, f"temp1_{ack_no}.pdf")
                                     temp_pdf2 = os.path.join(target_output_dir, f"temp2_{ack_no}.pdf")
+                                    has_sec_pdf = False
 
-                                    # --- [PATCHED INNER GRID REGEX EXTRACTION] ---
-                                    try:
-                                        wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 5)
-                                        preview_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvpreview")
-                                        p_row = preview_table.find_element(By.XPATH, ".//tr[last()]")
-                                        p_cols = p_row.find_elements(By.TAG_NAME, "td")
-                                        
-                                        if len(p_cols) >= 6:
-                                            col2_text = p_cols[1].text.replace('\n', ' ')
-                                            app_name = extract_info(col2_text, "Name:-", "Father/Husband Name:-")
-                                            if app_name == "N/A": app_name = extract_info(col2_text, "Name:-", "Father's Name:-")
-                                            father_name = extract_info(col2_text, "Father/Husband Name:-", "Mobile:-")
-                                            if father_name == "N/A": father_name = extract_info(col2_text, "Father's Name:-", "Mobile:-")
-                                            mobile = extract_info(col2_text, "Mobile:-")
-                                            
-                                            col3_text = p_cols[2].text.replace('\n', ' ')
-                                            app_address = extract_info(col3_text, "Address:-", "District:-")
-                                            app_dist = extract_info(col3_text, "District:-", "Block:-")
-                                            app_block = extract_info(col3_text, "Block:-", "Thana:-")
-                                            app_thana = extract_info(col3_text, "Thana:-", "Panchayat:-")
-                                            app_panch = extract_info(col3_text, "Panchayat:-", "PinCode:-")
-                                            app_pin = extract_info(col3_text, "PinCode:-")
-                                            
-                                            col4_text = p_cols[3].text.replace('\n', ' ')
-                                            app_type = extract_info(col4_text, "Application Type:-", "Registration no:-")
-                                            reg_date = extract_info(col4_text, "Date:-", "Department:-")
-                                            dept_name = extract_info(col4_text, "Department:-", "Grievance Type:-")
-                                            griev_type = extract_info(col4_text, "Grievance Type:-")
-                                            
-                                            col5_text = p_cols[4].text.replace('\n', ' ')
-                                            griev_div = extract_info(col5_text, "Division:-", "District:-")
-                                            griev_dist = extract_info(col5_text, "District:-", "Sub Division:-")
-                                            griev_subdiv = extract_info(col5_text, "Sub Division:-", "Block:-")
-                                            griev_block = extract_info(col5_text, "Block:-", "Panchayat:-")
-                                            griev_panch = extract_info(col5_text, "Panchayat:-", "Thana:-")
-                                            griev_thana = extract_info(col5_text, "Thana:-", "Pincode") 
-                                            griev_thana = griev_thana.rstrip(';-:').strip()
-                                            
-                                            desc = p_cols[5].text.strip()
-                                    except Exception as e: logging.debug(f"{ack_no}: Failed to parse preview: {e}")
+                                    wait_for_table(driver, "ContentPlaceHolder1_gvpreview", 8)
+                                    
+                                    # ==========================================
+                                    # SELF-HEALING FIELD-ROW EXTRACTION
+                                    # ==========================================
+                                    extracted_payload = driver.execute_script("""
+                                        var data = {
+                                            applicant: {},
+                                            address: {},
+                                            application: {},
+                                            grievance_location: {},
+                                            description: '',
+                                            pdf_url: null,
+                                            delegation: { officer: 'N/A', status: 'N/A', date: 'N/A', remarks: 'N/A', desig: 'N/A', level: 'N/A' },
+                                            history: { officer: 'N/A', status: 'N/A', date: 'N/A', remarks: 'N/A' }
+                                        };
 
-                                    # --- [PATCHED DELEGATION EXTRACTION] ---
-                                    try:
-                                        del_table = driver.find_element(By.ID, "ContentPlaceHolder1_gvappforwarded")
-                                        del_row = del_table.find_element(By.XPATH, ".//tr[2]")
-                                        d_cols_inner = del_row.find_elements(By.TAG_NAME, "td")
-                                        
-                                        if len(d_cols_inner) >= 7:
-                                            del_off = d_cols_inner[2].text.strip()
-                                            del_level_dept = d_cols_inner[3].text.replace('\n', ' ')
-                                            del_level = del_level_dept.split(' ')[0] if del_level_dept else "N/A"
-                                            
-                                            status_date_text = d_cols_inner[5].text.strip()
-                                            sd_parts = [p.strip() for p in status_date_text.split('\n') if p.strip()]
-                                            del_stat = sd_parts[0] if len(sd_parts) > 0 else "N/A"
-                                            del_date = sd_parts[1] if len(sd_parts) > 1 else "N/A"
-                                            
-                                            del_rem = d_cols_inner[6].text.strip()
-                                    except: pass
+                                        function mapFieldRows(container) {
+                                            var map = {};
+                                            if (!container) return map;
+                                            var rows = container.querySelectorAll('.field-row');
+                                            rows.forEach(function(r) {
+                                                var lbl = r.querySelector('.field-label');
+                                                var val = r.querySelector('.field-value');
+                                                if (lbl && val) {
+                                                    var key = lbl.innerText.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+                                                    map[key] = val.innerText.trim();
+                                                }
+                                            });
+                                            return map;
+                                        }
 
-                                    # --- [PATCHED HISTORY EXTRACTION] ---
-                                    try:
-                                        hist_table = driver.find_element(By.ID, "ContentPlaceHolder1_Gvforwarding")
-                                        hist_row = hist_table.find_element(By.XPATH, ".//tr[2]")
-                                        h_cols = hist_row.find_elements(By.TAG_NAME, "td")
-                                        
-                                        if len(h_cols) >= 7:
-                                            hist_off = h_cols[3].text.strip().replace('\n', ' | ')
-                                            hist_feed = h_cols[4].text.strip()
-                                            hist_date = h_cols[5].text.strip()
-                                            hist_rem = h_cols[6].text.strip()
-                                    except: pass
+                                        // 1. Target Preview Grid
+                                        var pRow = document.querySelector('#ContentPlaceHolder1_gvpreview tr:last-child');
+                                        if (pRow) {
+                                            var pCols = pRow.querySelectorAll(':scope > td');
+                                            pCols.forEach(function(cell) {
+                                                var fieldMap = mapFieldRows(cell);
+                                                if (fieldMap['name'] !== undefined || fieldMap['fathername'] !== undefined) {
+                                                    data.applicant = fieldMap;
+                                                } else if (fieldMap['address'] !== undefined || (fieldMap['district'] !== undefined && fieldMap['thana'] !== undefined && fieldMap['relatedto'] === undefined)) {
+                                                    data.address = fieldMap;
+                                                } else if (fieldMap['regno'] !== undefined || fieldMap['registrationno'] !== undefined || fieldMap['department'] !== undefined) {
+                                                    data.application = fieldMap;
+                                                } else if (fieldMap['relatedto'] !== undefined || fieldMap['division'] !== undefined || fieldMap['subdivision'] !== undefined) {
+                                                    data.grievance_location = fieldMap;
+                                                }
 
+                                                var descEl = cell.querySelector('.complaint-desc-box');
+                                                if (descEl) {
+                                                    data.description = descEl.innerText.trim();
+                                                }
+
+                                                var pdfEl = cell.querySelector('a[href*="IDoc.aspx"], a[id*="lnkPdf"]');
+                                                if (pdfEl) {
+                                                    data.pdf_url = pdfEl.getAttribute('href');
+                                                }
+                                            });
+                                        }
+
+                                        // 2. Target Delegation Table
+                                        var delTable = document.querySelector('#ContentPlaceHolder1_grdDelegate tr:last-child');
+                                        if (delTable) {
+                                            var dtds = delTable.querySelectorAll(':scope > td');
+                                            if (dtds.length >= 6) {
+                                                var offMap = mapFieldRows(dtds[2]);
+                                                var offArr = [];
+                                                if (offMap['designation']) offArr.push(offMap['designation']);
+                                                if (offMap['userid']) offArr.push(offMap['userid']);
+                                                data.delegation.officer = offArr.length > 0 ? offArr.join(' - ') : dtds[2].innerText.trim().replace(/\\n/g, ' ');
+
+                                                var statEl = dtds[3].querySelector('.status-badge');
+                                                data.delegation.status = statEl ? statEl.innerText.trim() : dtds[3].innerText.trim();
+
+                                                var dateVal = dtds[1].querySelector('.field-value') || dtds[4].querySelector('.field-value');
+                                                data.delegation.date = dateVal ? dateVal.innerText.trim() : dtds[1].innerText.trim();
+
+                                                var remBox = dtds[5].querySelector('.remarks-box');
+                                                data.delegation.remarks = remBox ? remBox.innerText.trim() : dtds[5].innerText.trim();
+                                            }
+                                        }
+
+                                        // 3. Target Assigned L1 Table
+                                        var fwdTable = document.querySelector('#ContentPlaceHolder1_gvappforwarded tr:last-child');
+                                        if (fwdTable) {
+                                            var ftds = fwdTable.querySelectorAll(':scope > td');
+                                            if (ftds.length >= 7) {
+                                                data.delegation.desig = ftds[2].innerText.trim();
+                                                var lvlMap = mapFieldRows(ftds[3]);
+                                                data.delegation.level = lvlMap['level'] || 'L1';
+                                                if (data.delegation.officer === 'N/A') {
+                                                    data.delegation.officer = data.delegation.desig;
+                                                }
+                                                if (data.delegation.status === 'N/A') {
+                                                    var st = ftds[5].querySelector('.status-badge');
+                                                    data.delegation.status = st ? st.innerText.trim() : 'Pending';
+                                                }
+                                            }
+                                        }
+
+                                        // 4. Target History Table
+                                        var histRow = document.querySelector('#ContentPlaceHolder1_Gvforwarding tr:last-child');
+                                        if (histRow) {
+                                            var htds = histRow.querySelectorAll(':scope > td');
+                                            if (htds.length >= 7) {
+                                                var hOffMap = mapFieldRows(htds[3]) || mapFieldRows(htds[2]);
+                                                var hOffArr = [];
+                                                if (hOffMap['designation']) hOffArr.push(hOffMap['designation']);
+                                                if (hOffMap['userid']) hOffArr.push(hOffMap['userid']);
+                                                data.history.officer = hOffArr.length > 0 ? hOffArr.join(' - ') : htds[3].innerText.trim().replace(/\\n/g, ' ');
+
+                                                var hStat = htds[4].querySelector('.status-badge');
+                                                data.history.status = hStat ? hStat.innerText.trim() : htds[4].innerText.trim();
+
+                                                var hDate = htds[1].querySelector('.field-value') || htds[5].querySelector('.field-value');
+                                                data.history.date = hDate ? hDate.innerText.trim() : htds[5].innerText.trim();
+
+                                                var hRem = htds[6].querySelector('.remarks-box');
+                                                data.history.remarks = hRem ? hRem.innerText.trim() : htds[6].innerText.trim();
+                                            }
+                                        }
+
+                                        return data;
+                                    """)
+
+                                    app_map = extracted_payload.get("applicant", {})
+                                    addr_map = extracted_payload.get("address", {})
+                                    appl_map = extracted_payload.get("application", {})
+                                    loc_map = extracted_payload.get("grievance_location", {})
+                                    del_info = extracted_payload.get("delegation", {})
+                                    hist_info = extracted_payload.get("history", {})
+
+                                    app_name = app_map.get("name", "N/A")
+                                    father_name = app_map.get("fathername", app_map.get("fatherhusbandname", "N/A"))
+                                    mobile = app_map.get("mobileno", app_map.get("mobile", "N/A"))
+
+                                    app_address = addr_map.get("address", "N/A")
+                                    app_dist = addr_map.get("district", "N/A")
+                                    app_block = addr_map.get("block", "N/A")
+                                    app_thana = addr_map.get("thana", "N/A")
+                                    app_panch = addr_map.get("panchayat", "N/A")
+                                    app_pin = addr_map.get("pincode", addr_map.get("pincode", "N/A"))
+
+                                    app_type = appl_map.get("type", appl_map.get("applicationtype", "N/A"))
+                                    reg_date = appl_map.get("date", "N/A")
+                                    dept_name = appl_map.get("department", "Energy")
+                                    griev_type = appl_map.get("grievancetype", "N/A")
+
+                                    griev_div = loc_map.get("division", "SARAN")
+                                    griev_dist = loc_map.get("district", "SARAN")
+                                    griev_subdiv = loc_map.get("subdivision", "N/A")
+                                    griev_block = loc_map.get("block", "N/A")
+                                    griev_panch = loc_map.get("panchayat", "N/A")
+                                    griev_thana = loc_map.get("thana", "N/A")
+
+                                    desc = extracted_payload.get("description", "N/A")
                                     subdiv, section = get_subdivision_section(griev_block, griev_panch)
 
                                     row_data = {
-                                        "S.No.": outer_sno, "Registration No.": ack_no, "Application Type": app_type,
-                                        "Applicant Name": app_name, "Mobile No": mobile, "Department Name": dept_name,
-                                        "Complaint Status": del_stat, "Applicant District": app_dist, "Applicant Block": app_block,
-                                        "Applicant Panchayat": app_panch, "Applicant Police Station": app_thana, "Pincode": app_pin, 
-                                        "Grievance Division": griev_div, "Grievance District": griev_dist, 
-                                        "Grievance Sub Division": griev_subdiv, "Grievance Block": griev_block, 
-                                        "Grievance Panchayat": griev_panch, "Grievance Police Station": griev_thana, 
-                                        "Grievance Type": griev_type, "Designation": del_off, "Designation Level": del_level,
-                                        "Delegated Status": "Yes" if del_off != "N/A" else "No", "Pending Duration (Level 1)": pending_duration, 
-                                        "Delegation Duration (Days)": "0", "Subdivision": subdiv, "Section": section
+                                        "S.No.": outer_sno, "Subdivision": subdiv, "Section": section, 
+                                        "Registration No.": ack_no, "Applicant Name": app_name, "Registration Date": reg_date, 
+                                        "Application Type": app_type, "Father's Name": father_name, "Mobile No": mobile, "Email": "N/A",
+                                        "Full Address": app_address, "Applicant District": app_dist, "Applicant Block": app_block, 
+                                        "Applicant Panchayat": app_panch, "Applicant Police Station": app_thana, "Pincode": app_pin,
+                                        "Department Name": dept_name, "Complaint Status": del_info.get("status", "N/A"), 
+                                        "Grievance Division": griev_div, "Grievance District": griev_dist, "Grievance Sub Division": griev_subdiv, 
+                                        "Grievance Block": griev_block, "Grievance Panchayat": griev_panch, "Grievance Police Station": griev_thana, 
+                                        "Grievance Type": griev_type, "Designation": del_info.get("desig", "N/A"), "Designation Level": del_info.get("level", "N/A"), 
+                                        "Delegated Status": "Yes" if del_info.get("officer") != "N/A" else "No", 
+                                        "Pending Duration (Level 1)": pending_duration, "Delegation Duration (Days)": "0", 
+                                        "Grievance Description": desc, "Delegated To Officer": del_info.get("officer", "N/A"), 
+                                        "Delegated Action Status": del_info.get("status", "N/A"), "Delegated Action Date": del_info.get("date", "N/A"), 
+                                        "Delegated Remarks": del_info.get("remarks", "N/A"), "History Officer Details": hist_info.get("officer", "N/A"), 
+                                        "History Action Date": hist_info.get("date", "N/A"), "History Feedback": hist_info.get("status", "N/A"), 
+                                        "History Remarks": hist_info.get("remarks", "N/A"), "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     }
-                                    
+
                                     # IN-FLIGHT SMART MERGE
                                     if ack_no in extracted_ack_set:
                                         old_row = None
@@ -968,15 +1028,6 @@ def main():
                                             driver.switch_to.window(main_tab)
                                             continue 
                                             
-                                    row_data.update({
-                                        "Father's Name": father_name, "Email": "N/A", "Full Address": app_address,
-                                        "Registration Date": reg_date, "Grievance Description": desc, 
-                                        "Delegated To Officer": del_off, "Delegated Action Status": del_stat,
-                                        "Delegated Action Date": del_date, "Delegated Remarks": del_rem, 
-                                        "History Officer Details": hist_off, "History Action Date": hist_date, 
-                                        "History Feedback": hist_feed, "History Remarks": hist_rem,
-                                        "Last Updated Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    })
                                     for k in row_data: row_data[k] = clean_for_excel(row_data[k])
 
                                     logging.info(f" 🖨️  Generating Executive Blue PDF for {ack_no}...")
@@ -987,9 +1038,9 @@ def main():
                                         match = re.search(r'(JVBER[A-Za-z0-9+/=\s]{100,})', driver.page_source)
                                         
                                         if not match:
-                                            pdf_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'IDoc.aspx')]")
-                                            if pdf_links:
-                                                safe_click(driver, pdf_links[0])
+                                            doc_href = extracted_payload.get("pdf_url")
+                                            if doc_href:
+                                                driver.execute_script(f"window.open('{doc_href}', '_blank');")
                                                 WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 3)
                                                 attach_tab = [h for h in driver.window_handles if h not in [main_tab, print_tab, detail_tab]][0]
                                                 driver.switch_to.window(attach_tab)
