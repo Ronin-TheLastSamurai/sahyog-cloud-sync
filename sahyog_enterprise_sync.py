@@ -273,7 +273,7 @@ def wait_for_telegram_reply_or_file(prompt_message):
         time.sleep(2)
 
 # ==========================================
-# 3. HELPER FUNCTIONS & SYNC LOCKS
+# 3. HELPER FUNCTIONS & RESILIENT SESSION GUARDS
 # ==========================================
 def clean_for_excel(val):
     if not isinstance(val, str) and not isinstance(val, float): return val
@@ -352,16 +352,26 @@ def verify_page_state(driver):
     wait_for_telegram_reply_or_file(msg)
     return True
 
-def check_session(driver, current_user, current_pass):
+def is_logged_in(driver):
+    """Verifies authentication using persistent indicators that survive client-side scripts."""
     try:
-        driver.find_element(By.XPATH, "//*[contains(@id, 'lblwelcome')]")
-        return True
+        indicators = driver.find_elements(
+            By.XPATH, 
+            "//*[contains(@id, 'userWelcomeDropdownContainer') or contains(@id, 'userProfileDropdownBtn') or contains(@id, 'lblwelcome') or contains(@id, 'LoginStatus') or contains(@class, 'sidebar-toggle-btn')]"
+        )
+        return len(indicators) > 0 and "loginadm" not in driver.current_url.lower()
     except:
+        return False
+
+def check_session(driver, current_user, current_pass):
+    """Verifies session. If expired, performs re-login and signals the caller to recover drilldown state."""
+    if not is_logged_in(driver):
         msg = "🚨 SESSION EXPIRED! Triggering re-login flow..."
         logging.warning(msg)
         send_telegram_message(msg)
         perform_login(driver, current_user, current_pass)
-        return True
+        return False  # Signals that a re-login occurred and state needs restoration
+    return True
 
 # ==========================================
 # AUTH & DYNAMIC LOGIN ENGINE
@@ -386,7 +396,10 @@ def perform_login(driver, login_user, login_pass):
             driver.find_element(By.ID, "ContentPlaceHolder1_txtCode").send_keys(captcha_text)
             driver.find_element(By.ID, "ContentPlaceHolder1_btnLogin").click()
             
-            WebDriverWait(driver, 15).until(lambda d: len(d.find_elements(By.XPATH, "//a[contains(text(), 'Grievance Action')]")) > 0)
+            # Accommodate new portal navigation menus
+            WebDriverWait(driver, 15).until(
+                lambda d: len(d.find_elements(By.XPATH, "//a[contains(text(), 'Grievance Action') or contains(@id, 'LoginStatus')]")) > 0
+            )
             logging.info(f"✅ Login Successful for {login_user}!")
             return True
             
@@ -609,7 +622,7 @@ def main():
     
     try:
         logging.info("\n" + "="*80)
-        logging.info("   SAHYOG V4.19 - FULL AUTONOMOUS GRID ROW EXTRACTOR")
+        logging.info("   SAHYOG V4.20 - ROBUST AUTH MONITOR & FIELD-ROW PARSER ACTIVE")
         logging.info(f"   Detailed Logs: {log_filename}")
         logging.info("="*80)
         send_telegram_message("🚀 Sahyog Cloud Engine Starting (Drilldown Group Mode)...")
@@ -799,14 +812,33 @@ def main():
                             detail_rows_count = len(detail_rows)
                             
                             for row_idx in range(detail_rows_count):
+                                ack_no = f"ROW_{row_idx + 1}"  # Safe fallback to prevent UnboundLocalError
                                 driver.switch_to.window(main_tab)
-                                check_session(driver, SAHYOG_USER, SAHYOG_PASS)
+                                
+                                # Robust session verification
+                                if not check_session(driver, SAHYOG_USER, SAHYOG_PASS):
+                                    logging.warning("⚠️ Session expired and re-login executed. Triggering Soft Recovery...")
+                                    block_loop_crashed = True
+                                    break
+                                    
                                 verify_page_state(driver)
                                 try:
-                                    d_row = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")[row_idx]
+                                    # Bounds check dynamically fetched rows
+                                    current_rows = driver.find_elements(By.XPATH, "//table[@id='ContentPlaceHolder1_gvDetails']//tr[position()>1 and not(contains(@class, 'pagination-ys'))]")
+                                    if row_idx >= len(current_rows):
+                                        logging.warning(f"Row index {row_idx} no longer present in grid ({len(current_rows)} available). Breaking page loop.")
+                                        break
+                                        
+                                    d_row = current_rows[row_idx]
                                     d_cols = d_row.find_elements(By.TAG_NAME, "td")
+                                    if len(d_cols) < 5: 
+                                        continue
                                     
-                                    ref_link = d_row.find_element(By.XPATH, ".//a[contains(text(), 'REF')]")
+                                    ref_links = d_row.find_elements(By.XPATH, ".//a[contains(text(), 'REF')]")
+                                    if not ref_links: 
+                                        continue
+                                        
+                                    ref_link = ref_links[0]
                                     ack_no = ref_link.text.strip()
                                     ack_url = ref_link.get_attribute("href")
                                     
